@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "operating_system": "",
+  "display_name": "",
+  "description": "",
+
+  "fire_modes": [],
+  "cyclic_rate_rpm": {},
+
+  "bones": [
+    {
+      "name": "weapon_root",
+      "parent": null,
+      "presence": "required",
+      "movement_type": "static",
+      "description": "Root bone — typically the receiver or frame"
+    }
+  ],
+
+  "unified_skeleton_extra_bones": [
+    "ik_hand_root", "ik_hand_gun", "ik_hand_l", "ik_hand_r"
+  ],
+
+  "physics": {},
+  "part_name_aliases": {}
+}

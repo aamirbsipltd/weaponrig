@@ -1,0 +1,256 @@
+{
+  "schema_version": "1.0",
+  "operating_system": "ar15_direct_impingement",
+  "display_name": "AR-15 Direct Impingement",
+  "description": "Stoner gas system with rotating bolt",
+
+  "fire_modes": ["semi", "auto", "burst_3"],
+  "cyclic_rate_rpm": {
+    "semi": null,
+    "auto": 700,
+    "burst_3": 900
+  },
+
+  "bones": [
+    {
+      "name": "weapon_root",
+      "parent": null,
+      "presence": "required",
+      "movement_type": "static",
+      "description": "Lower receiver - root of all weapon bones"
+    },
+    {
+      "name": "upper_receiver",
+      "parent": "weapon_root",
+      "presence": "required",
+      "movement_type": "static",
+      "description": "Upper receiver - static relative to lower"
+    },
+    {
+      "name": "bolt_carrier",
+      "parent": "upper_receiver",
+      "presence": "required",
+      "movement_type": "translate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_LOCATION",
+          "min_y": 0.0,
+          "max_y": -0.095,
+          "use_min_y": true,
+          "use_max_y": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "carrier_travel_m": 0.095,
+        "dwell_before_unlock_m": 0.003,
+        "carrier_mass_kg": 0.297,
+        "buffer_spring_rate_n_per_m": 3500
+      }
+    },
+    {
+      "name": "bolt",
+      "parent": "bolt_carrier",
+      "presence": "required",
+      "movement_type": "rotate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_ROTATION",
+          "min_y": 0.0,
+          "max_y": 0.361,
+          "use_limit_y": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "drivers": [
+        {
+          "driven_property": "rotation_euler.y",
+          "driver_bone": "bolt_carrier",
+          "driver_property": "location.y",
+          "expression": "var * -3.8",
+          "description": "Bolt rotates 20.7deg as carrier travels back. Cam profile: dwell for first 3mm, then linear rotation over next 5.4mm, then dwell",
+          "source": "Patent US10488128B2, Leitner-Wise LLC",
+          "cam_curve_keyframes": [
+            {"carrier_travel_pct": 0.0, "bolt_rotation_pct": 0.0},
+            {"carrier_travel_pct": 0.032, "bolt_rotation_pct": 0.0},
+            {"carrier_travel_pct": 0.089, "bolt_rotation_pct": 1.0},
+            {"carrier_travel_pct": 1.0, "bolt_rotation_pct": 1.0}
+          ]
+        }
+      ],
+      "parameters": {
+        "rotation_degrees": 20.7,
+        "lug_count": 7,
+        "source": "US Patent data, mil-spec bolt rotation"
+      }
+    },
+    {
+      "name": "trigger",
+      "parent": "weapon_root",
+      "presence": "required",
+      "movement_type": "rotate",
+      "axis": "X",
+      "constraints": [
+        {
+          "type": "LIMIT_ROTATION",
+          "min_x": 0.0,
+          "max_x": -0.262,
+          "use_limit_x": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "rotation_degrees": 15.0,
+        "pivot_description": "Trigger pin center"
+      }
+    },
+    {
+      "name": "selector",
+      "parent": "weapon_root",
+      "presence": "expected",
+      "movement_type": "rotate",
+      "axis": "Z",
+      "constraints": [
+        {
+          "type": "LIMIT_ROTATION",
+          "use_limit_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "positions": [
+          {"name": "safe", "angle_degrees": 0},
+          {"name": "semi", "angle_degrees": 90},
+          {"name": "auto", "angle_degrees": 180}
+        ],
+        "detent_count": 3
+      }
+    },
+    {
+      "name": "charging_handle",
+      "parent": "upper_receiver",
+      "presence": "expected",
+      "movement_type": "translate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_LOCATION",
+          "min_y": 0.0,
+          "max_y": -0.076,
+          "use_min_y": true,
+          "use_max_y": true,
+          "owner_space": "LOCAL"
+        }
+      ]
+    },
+    {
+      "name": "magazine",
+      "parent": null,
+      "presence": "required",
+      "movement_type": "translate",
+      "axis": "Z",
+      "description": "Unparented when released, parents to weapon_root when inserted"
+    },
+    {
+      "name": "magazine_release",
+      "parent": "weapon_root",
+      "presence": "expected",
+      "movement_type": "translate",
+      "axis": "X"
+    },
+    {
+      "name": "dust_cover",
+      "parent": "upper_receiver",
+      "presence": "optional",
+      "movement_type": "rotate",
+      "axis": "X",
+      "parameters": {
+        "rotation_degrees": 75.0,
+        "pivot_description": "Dust cover hinge pin"
+      }
+    },
+    {
+      "name": "forward_assist",
+      "parent": "upper_receiver",
+      "presence": "optional",
+      "movement_type": "translate",
+      "axis": "Y"
+    },
+    {
+      "name": "bolt_catch",
+      "parent": "weapon_root",
+      "presence": "optional",
+      "movement_type": "rotate",
+      "axis": "X"
+    },
+    {
+      "name": "hammer",
+      "parent": "weapon_root",
+      "presence": "optional",
+      "movement_type": "rotate",
+      "axis": "X",
+      "parameters": {
+        "rotation_degrees": 35.0,
+        "pivot_description": "Hammer pin center"
+      }
+    },
+    {
+      "name": "buffer_spring",
+      "parent": "bolt_carrier",
+      "presence": "optional",
+      "movement_type": "scale",
+      "axis": "Y",
+      "drivers": [
+        {
+          "driven_property": "scale.y",
+          "driver_bone": "bolt_carrier",
+          "driver_property": "location.y",
+          "expression": "1.0 + (var / 0.095) * 0.3",
+          "description": "Buffer spring compresses as carrier moves back"
+        }
+      ]
+    },
+    {
+      "name": "cam_pin",
+      "parent": "bolt",
+      "presence": "optional",
+      "movement_type": "rotate",
+      "axis": "Y",
+      "description": "Rotates with bolt, visual only"
+    },
+    {
+      "name": "extractor",
+      "parent": "bolt",
+      "presence": "optional",
+      "movement_type": "rotate",
+      "axis": "X"
+    }
+  ],
+
+  "unified_skeleton_extra_bones": [
+    "ik_hand_root", "ik_hand_gun", "ik_hand_l", "ik_hand_r"
+  ],
+
+  "physics": {
+    "gas_impulse_duration_ms": 1.2,
+    "carrier_peak_velocity_m_per_s": 5.8,
+    "buffer_mass_kg": 0.091,
+    "buffer_spring_rate_n_per_m": 3500,
+    "return_spring_preload_n": 8.0,
+    "bolt_carrier_mass_kg": 0.297,
+    "source": "Sprinco standard buffer spring specs, mil-spec BCG weight"
+  },
+
+  "part_name_aliases": {
+    "bolt_carrier": ["bcg", "bolt_carrier_group", "carrier", "BCG"],
+    "bolt": ["bolt_head", "bolt_face"],
+    "trigger": ["trigger_blade", "trigger_shoe"],
+    "charging_handle": ["ch", "charge_handle", "cocking_handle"],
+    "magazine": ["mag", "clip", "magazine_body"],
+    "selector": ["selector_switch", "safety", "fire_selector", "safety_selector"],
+    "dust_cover": ["ejection_port_cover", "port_cover"],
+    "forward_assist": ["fwd_assist", "FA"]
+  }
+}

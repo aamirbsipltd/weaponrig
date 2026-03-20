@@ -1,0 +1,9 @@
+[project]
+name = "weaponrig"
+version = "0.1.0"
+description = "Automated weapon rigging pipeline for FPS games"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
