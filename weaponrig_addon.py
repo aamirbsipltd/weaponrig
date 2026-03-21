@@ -3,13 +3,14 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 2, 0),
+    "version": (0, 3, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
     "category": "Rigging",
 }
 
+import fnmatch
 import json
 import math
 from dataclasses import dataclass, field
@@ -17,8 +18,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 import bpy
+import gpu
 from bpy_extras.io_utils import ImportHelper
-from mathutils import Vector
+from gpu_extras.batch import batch_for_shader
+from mathutils import Vector, kdtree
 
 
 # ===================================================================
@@ -97,7 +100,7 @@ WEAPON_CONFIGS = {
                         "driver_bone": "Bolt Carrier",
                         "driver_property": "location.y",
                         "expression": "var * -3.8",
-                        "description": "Bolt rotates 20.7 degrees as carrier travels back. Cam pin rides in carrier track: dwell for first 3mm, then linear rotation over next 5.4mm, then dwell",
+                        "description": "Bolt rotates 20.7 degrees as carrier travels back",
                         "cam_curve_keyframes": [
                             {"carrier_travel_pct": 0.0, "bolt_rotation_pct": 0.0},
                             {"carrier_travel_pct": 0.032, "bolt_rotation_pct": 0.0},
@@ -130,9 +133,7 @@ WEAPON_CONFIGS = {
                         "owner_space": "LOCAL",
                     }
                 ],
-                "parameters": {
-                    "rotation_degrees": 15.0,
-                },
+                "parameters": {"rotation_degrees": 15.0},
                 "description": "Trigger rotates ~15 degrees around the trigger pin. Releases hammer when pulled",
                 "placement": "Place at the trigger pin hole center in the lower receiver",
             },
@@ -215,17 +216,12 @@ WEAPON_CONFIGS = {
                 "constraints": [
                     {
                         "type": "LIMIT_ROTATION",
-                        "min_x": 0.0,
-                        "max_x": 1.309,
-                        "use_limit_x": True,
-                        "use_limit_y": True,
-                        "use_limit_z": True,
+                        "min_x": 0.0, "max_x": 1.309,
+                        "use_limit_x": True, "use_limit_y": True, "use_limit_z": True,
                         "owner_space": "LOCAL",
                     }
                 ],
-                "parameters": {
-                    "rotation_degrees": 75.0,
-                },
+                "parameters": {"rotation_degrees": 75.0},
                 "description": "Ejection port dust cover. Springs open ~75 degrees when bolt cycles",
                 "placement": "Place at the dust cover hinge pin on the right side of the upper receiver",
             },
@@ -256,15 +252,12 @@ WEAPON_CONFIGS = {
                 "constraints": [
                     {
                         "type": "LIMIT_ROTATION",
-                        "min_x": 0.0,
-                        "max_x": 0.175,
-                        "use_limit_x": True,
-                        "use_limit_y": True,
-                        "use_limit_z": True,
+                        "min_x": 0.0, "max_x": 0.175,
+                        "use_limit_x": True, "use_limit_y": True, "use_limit_z": True,
                         "owner_space": "LOCAL",
                     }
                 ],
-                "description": "Holds bolt carrier open after last round. Magazine follower pushes it up",
+                "description": "Holds bolt carrier open after last round",
                 "placement": "Place at the bolt catch pivot pin on the left side of the lower receiver",
             },
             {
@@ -276,17 +269,12 @@ WEAPON_CONFIGS = {
                 "constraints": [
                     {
                         "type": "LIMIT_ROTATION",
-                        "min_x": -0.611,
-                        "max_x": 0.0,
-                        "use_limit_x": True,
-                        "use_limit_y": True,
-                        "use_limit_z": True,
+                        "min_x": -0.611, "max_x": 0.0,
+                        "use_limit_x": True, "use_limit_y": True, "use_limit_z": True,
                         "owner_space": "LOCAL",
                     }
                 ],
-                "parameters": {
-                    "rotation_degrees": 35.0,
-                },
+                "parameters": {"rotation_degrees": 35.0},
                 "description": "Rotates ~35 degrees under spring tension to strike firing pin",
                 "placement": "Place at the hammer pin hole center in the lower receiver, behind the trigger",
             },
@@ -302,11 +290,11 @@ WEAPON_CONFIGS = {
                         "driver_bone": "Bolt Carrier",
                         "driver_property": "location.y",
                         "expression": "1.0 + (var / 0.095) * 0.3",
-                        "description": "Buffer spring compresses as carrier moves back. At full travel, spring is 30% shorter",
+                        "description": "Buffer spring compresses as carrier moves back",
                     }
                 ],
                 "description": "Buffer spring in receiver extension. Absorbs carrier energy and returns it forward",
-                "placement": "Place inside the buffer tube, at the front of the spring where it contacts the buffer",
+                "placement": "Place inside the buffer tube, at the front of the spring",
             },
             {
                 "name": "Cam Pin",
@@ -314,7 +302,7 @@ WEAPON_CONFIGS = {
                 "presence": "optional",
                 "movement_type": "rotate",
                 "axis": "Y",
-                "description": "Rides in carrier cam track to force bolt rotation. Visual indicator of lock state",
+                "description": "Rides in carrier cam track to force bolt rotation",
                 "placement": "Place at the cam pin hole in the bolt, perpendicular to the bore axis",
             },
             {
@@ -326,16 +314,13 @@ WEAPON_CONFIGS = {
                 "constraints": [
                     {
                         "type": "LIMIT_ROTATION",
-                        "min_x": 0.0,
-                        "max_x": 0.087,
-                        "use_limit_x": True,
-                        "use_limit_y": True,
-                        "use_limit_z": True,
+                        "min_x": 0.0, "max_x": 0.087,
+                        "use_limit_x": True, "use_limit_y": True, "use_limit_z": True,
                         "owner_space": "LOCAL",
                     }
                 ],
                 "description": "Spring-loaded claw that grips cartridge rim. Pivots ~5 degrees",
-                "placement": "Place at the extractor pivot point on the bolt face, at the 3 o'clock position",
+                "placement": "Place at the extractor pivot point on the bolt face",
             },
         ],
         "physics": {
@@ -347,14 +332,22 @@ WEAPON_CONFIGS = {
             "bolt_carrier_mass_kg": 0.297,
         },
         "part_name_aliases": {
-            "Bolt Carrier": ["bcg", "bolt_carrier_group", "carrier", "BCG"],
-            "Bolt": ["bolt_head", "bolt_face"],
-            "Trigger": ["trigger_blade", "trigger_shoe"],
-            "Charging Handle": ["ch", "charge_handle", "cocking_handle"],
-            "Magazine": ["mag", "clip", "magazine_body"],
-            "Selector": ["selector_switch", "safety", "fire_selector"],
-            "Dust Cover": ["ejection_port_cover", "port_cover"],
-            "Forward Assist": ["fwd_assist", "FA"],
+            "Bolt Carrier": ["*bcg*", "*bolt_carrier*", "*bolt*carrier*", "*carrier*"],
+            "Bolt": ["*bolt*head*", "*bolt*face*", "*bolt*"],
+            "Trigger": ["*trigger*", "*trig*"],
+            "Charging Handle": ["*charging*", "*charge*handle*", "*ch_*", "*cocking*"],
+            "Magazine": ["*mag*", "*magazine*", "*clip*"],
+            "Selector": ["*selector*", "*safety*", "*fire*select*"],
+            "Dust Cover": ["*dust*cover*", "*ejection*cover*", "*port*cover*"],
+            "Forward Assist": ["*fwd*assist*", "*forward*assist*"],
+            "Hammer": ["*hammer*"],
+            "Buffer Spring": ["*buffer*spring*", "*recoil*spring*"],
+            "Bolt Catch": ["*bolt*catch*", "*bolt*release*"],
+            "Cam Pin": ["*cam*pin*"],
+            "Extractor": ["*extractor*"],
+            "Magazine Release": ["*mag*release*", "*mag*button*"],
+            "Upper Receiver": ["*upper*", "*upper*receiver*"],
+            "Weapon Root": ["*lower*", "*lower*receiver*", "*receiver*", "*body*", "*frame*"],
         },
     },
 }
@@ -509,6 +502,126 @@ class WeaponConfig:
 
 
 # ===================================================================
+# WIDGET SHAPES (custom bone display)
+# ===================================================================
+
+_WGT_COLLECTION_NAME = "WGT_WeaponRig"
+
+
+def _get_widget_collection():
+    """Get or create hidden collection for widget meshes."""
+    col = bpy.data.collections.get(_WGT_COLLECTION_NAME)
+    if col is None:
+        col = bpy.data.collections.new(_WGT_COLLECTION_NAME)
+        bpy.context.scene.collection.children.link(col)
+    col.hide_viewport = True
+    col.hide_render = True
+    return col
+
+
+def _create_arrow_widget():
+    """Arrow shape for translation bones."""
+    name = "WGT_arrow"
+    if name in bpy.data.objects:
+        return bpy.data.objects[name]
+    import bmesh
+    mesh = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    # Shaft
+    v1 = bm.verts.new((-0.015, 0.0, 0.0))
+    v2 = bm.verts.new((0.015, 0.0, 0.0))
+    v3 = bm.verts.new((0.015, 0.8, 0.0))
+    v4 = bm.verts.new((-0.015, 0.8, 0.0))
+    bm.faces.new((v1, v2, v3, v4))
+    # Arrowhead
+    v5 = bm.verts.new((-0.04, 0.8, 0.0))
+    v6 = bm.verts.new((0.04, 0.8, 0.0))
+    v7 = bm.verts.new((0.0, 1.0, 0.0))
+    bm.faces.new((v5, v6, v7))
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new(name, mesh)
+    _get_widget_collection().objects.link(obj)
+    return obj
+
+
+def _create_arc_widget():
+    """Arc shape for rotation bones."""
+    name = "WGT_arc"
+    if name in bpy.data.objects:
+        return bpy.data.objects[name]
+    import bmesh
+    mesh = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    segments = 16
+    radius = 0.5
+    angle = math.radians(90)
+    verts = []
+    for i in range(segments + 1):
+        t = -angle / 2 + angle * i / segments
+        x = math.cos(t) * radius
+        y = math.sin(t) * radius
+        verts.append(bm.verts.new((x, y, 0)))
+    for i in range(segments):
+        bm.edges.new((verts[i], verts[i + 1]))
+    # Arrowhead at tip
+    tip = verts[-1]
+    t_end = -angle / 2 + angle
+    dx = -math.sin(t_end) * 0.08
+    dy = math.cos(t_end) * 0.08
+    a1 = bm.verts.new((tip.co.x + dx + dy * 0.3, tip.co.y + dy - dx * 0.3, 0))
+    a2 = bm.verts.new((tip.co.x + dx - dy * 0.3, tip.co.y + dy + dx * 0.3, 0))
+    bm.edges.new((tip, a1))
+    bm.edges.new((tip, a2))
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new(name, mesh)
+    _get_widget_collection().objects.link(obj)
+    return obj
+
+
+def _create_cube_widget():
+    """Cube wireframe for static bones."""
+    name = "WGT_cube"
+    if name in bpy.data.objects:
+        return bpy.data.objects[name]
+    import bmesh
+    mesh = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    s = 0.3
+    verts = [
+        bm.verts.new((-s, -s, -s)), bm.verts.new((s, -s, -s)),
+        bm.verts.new((s, s, -s)), bm.verts.new((-s, s, -s)),
+        bm.verts.new((-s, -s, s)), bm.verts.new((s, -s, s)),
+        bm.verts.new((s, s, s)), bm.verts.new((-s, s, s)),
+    ]
+    edges = [(0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),(0,4),(1,5),(2,6),(3,7)]
+    for a, b in edges:
+        bm.edges.new((verts[a], verts[b]))
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new(name, mesh)
+    _get_widget_collection().objects.link(obj)
+    return obj
+
+
+def _assign_bone_shape(armature_obj, bone_def):
+    """Assign custom shape to a pose bone based on its movement type."""
+    pose_bone = armature_obj.pose.bones.get(bone_def.name)
+    if pose_bone is None:
+        return
+    if bone_def.movement_type == "translate":
+        pose_bone.custom_shape = _create_arrow_widget()
+    elif bone_def.movement_type in ("rotate", "scale"):
+        pose_bone.custom_shape = _create_arc_widget()
+    elif bone_def.movement_type == "static":
+        pose_bone.custom_shape = _create_cube_widget()
+    if pose_bone.custom_shape:
+        pose_bone.custom_shape_scale_xyz = (3.0, 3.0, 3.0)
+        pose_bone.use_custom_shape_bone_size = True
+
+
+# ===================================================================
 # SKELETON BUILDER
 # ===================================================================
 
@@ -537,6 +650,9 @@ def get_or_create_armature(context):
     arm_obj = bpy.data.objects.new("WeaponRig", arm_data)
     context.collection.objects.link(arm_obj)
     arm_obj["weaponrig"] = True
+    # Auto In Front so bones are visible through mesh
+    arm_obj.show_in_front = True
+    arm_data.display_type = "STICK"
     return arm_obj
 
 
@@ -584,6 +700,7 @@ def add_single_bone(config, bone_name, armature_obj, position, context):
 
     info["constraints_added"] = _apply_bone_constraints(armature_obj, bone_def)
     info["drivers_added"] = _apply_bone_drivers(armature_obj, bone_def)
+    _assign_bone_shape(armature_obj, bone_def)
 
     return info
 
@@ -719,6 +836,242 @@ def _apply_bone_drivers(arm_obj, bone_def):
 
 
 # ===================================================================
+# FIRING CYCLE SLIDER
+# ===================================================================
+
+def _update_cycle_progress(self, context):
+    """Drive all bone transforms based on cycle progress slider."""
+    arm_obj = None
+    for obj in context.scene.objects:
+        if obj.type == "ARMATURE" and obj.get("weaponrig"):
+            arm_obj = obj
+            break
+    if arm_obj is None:
+        return
+
+    weapon_type = context.scene.weaponrig_weapon_type
+    if weapon_type not in WEAPON_CONFIGS:
+        return
+    config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
+    progress = self.cycle_progress
+    added = set(_get_added_list(context))
+
+    for bone_def in config.bones:
+        if bone_def.name not in added:
+            continue
+        pose_bone = arm_obj.pose.bones.get(bone_def.name)
+        if pose_bone is None:
+            continue
+
+        axis_idx = _AXIS_INDEX.get(bone_def.axis.lower(), 1) if bone_def.axis else 1
+
+        if bone_def.movement_type == "translate" and bone_def.constraints:
+            for cdef in bone_def.constraints:
+                if cdef.type == "LIMIT_LOCATION":
+                    travel_min = getattr(cdef, f"min_{bone_def.axis.lower()}", 0.0)
+                    travel_max = getattr(cdef, f"max_{bone_def.axis.lower()}", 0.0)
+                    travel = min(travel_min, travel_max)  # negative = rearward
+                    loc = [0.0, 0.0, 0.0]
+                    loc[axis_idx] = travel * progress
+                    pose_bone.location = Vector(loc)
+                    break
+
+        elif bone_def.movement_type == "rotate" and bone_def.constraints:
+            for cdef in bone_def.constraints:
+                if cdef.type == "LIMIT_ROTATION":
+                    rot_min = getattr(cdef, f"min_{bone_def.axis.lower()}", 0.0)
+                    rot_max = getattr(cdef, f"max_{bone_def.axis.lower()}", 0.0)
+                    rot_range = rot_max - rot_min if abs(rot_max - rot_min) > 0.001 else rot_min
+                    rot = [0.0, 0.0, 0.0]
+                    rot[axis_idx] = rot_range * progress
+                    pose_bone.rotation_mode = "XYZ"
+                    pose_bone.rotation_euler = rot
+                    break
+
+        elif bone_def.movement_type == "scale" and bone_def.drivers:
+            for ddef in bone_def.drivers:
+                if "scale" in ddef.driven_property:
+                    # Evaluate expression with var = simulated driver input
+                    driver_bone_def = config.get_bone(ddef.driver_bone)
+                    if driver_bone_def and driver_bone_def.constraints:
+                        for dc in driver_bone_def.constraints:
+                            if dc.type == "LIMIT_LOCATION":
+                                axis_l = driver_bone_def.axis.lower() if driver_bone_def.axis else "y"
+                                travel = min(getattr(dc, f"min_{axis_l}", 0), getattr(dc, f"max_{axis_l}", 0))
+                                var = travel * progress
+                                try:
+                                    scale_val = eval(ddef.expression, {"var": var, "abs": abs, "math": math})
+                                except Exception:
+                                    scale_val = 1.0
+                                s_idx = _AXIS_INDEX.get(ddef.driven_property.rsplit(".", 1)[1], 1)
+                                scale = [1.0, 1.0, 1.0]
+                                scale[s_idx] = scale_val
+                                pose_bone.scale = Vector(scale)
+                                break
+
+    context.view_layer.update()
+    for area in context.screen.areas:
+        if area.type == "VIEW_3D":
+            area.tag_redraw()
+
+
+class WeaponRigProperties(bpy.types.PropertyGroup):
+    cycle_progress: bpy.props.FloatProperty(
+        name="Cycle Progress",
+        description="Simulate the weapon firing cycle (0% = rest, 100% = full travel)",
+        min=0.0, max=1.0,
+        default=0.0,
+        subtype="FACTOR",
+        update=_update_cycle_progress,
+    )
+
+
+# ===================================================================
+# CONSTRAINT RANGE VISUALIZATION (GPU overlay)
+# ===================================================================
+
+_draw_handler = None
+
+
+def _draw_constraint_ranges():
+    """Draw travel lines and rotation arcs for weapon bones."""
+    context = bpy.context
+    obj = context.active_object
+    if not obj or obj.type != "ARMATURE" or not obj.get("weaponrig"):
+        return
+    if obj.mode != "POSE":
+        return
+
+    weapon_type = context.scene.weaponrig_weapon_type
+    if weapon_type not in WEAPON_CONFIGS:
+        return
+    config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
+    added = set(_get_added_list(context))
+
+    all_coords = []
+    all_colors = []
+
+    for bone_def in config.bones:
+        if bone_def.name not in added or not bone_def.constraints:
+            continue
+        pose_bone = obj.pose.bones.get(bone_def.name)
+        if pose_bone is None:
+            continue
+
+        bone_mat = obj.matrix_world @ pose_bone.matrix
+        head_world = bone_mat.translation
+
+        for cdef in bone_def.constraints:
+            if cdef.type == "LIMIT_LOCATION" and bone_def.axis:
+                axis_l = bone_def.axis.lower()
+                travel_min = min(getattr(cdef, f"min_{axis_l}", 0), getattr(cdef, f"max_{axis_l}", 0))
+                travel_max = max(getattr(cdef, f"min_{axis_l}", 0), getattr(cdef, f"max_{axis_l}", 0))
+
+                axis_vec = bone_mat.to_3x3() @ Vector(
+                    (1 if bone_def.axis == "X" else 0,
+                     1 if bone_def.axis == "Y" else 0,
+                     1 if bone_def.axis == "Z" else 0)
+                )
+
+                start = head_world + axis_vec * travel_min
+                end = head_world + axis_vec * travel_max
+
+                all_coords.extend([start, end])
+                all_colors.extend([
+                    (0.0, 1.0, 0.3, 0.8),  # green at rest
+                    (1.0, 0.2, 0.1, 0.8),  # red at limit
+                ])
+
+            elif cdef.type == "LIMIT_ROTATION" and bone_def.axis:
+                axis_l = bone_def.axis.lower()
+                rot_min = min(getattr(cdef, f"min_{axis_l}", 0), getattr(cdef, f"max_{axis_l}", 0))
+                rot_max = max(getattr(cdef, f"min_{axis_l}", 0), getattr(cdef, f"max_{axis_l}", 0))
+
+                if abs(rot_max - rot_min) < 0.001:
+                    continue
+
+                # Draw arc segments
+                segments = 12
+                radius = 0.03
+                bone_rot = bone_mat.to_3x3()
+
+                if bone_def.axis == "X":
+                    fwd = bone_rot @ Vector((0, 1, 0))
+                    up = bone_rot @ Vector((0, 0, 1))
+                elif bone_def.axis == "Y":
+                    fwd = bone_rot @ Vector((1, 0, 0))
+                    up = bone_rot @ Vector((0, 0, 1))
+                else:
+                    fwd = bone_rot @ Vector((1, 0, 0))
+                    up = bone_rot @ Vector((0, 1, 0))
+
+                for i in range(segments):
+                    t0 = rot_min + (rot_max - rot_min) * i / segments
+                    t1 = rot_min + (rot_max - rot_min) * (i + 1) / segments
+                    p0 = head_world + (fwd * math.cos(t0) + up * math.sin(t0)) * radius
+                    p1 = head_world + (fwd * math.cos(t1) + up * math.sin(t1)) * radius
+                    all_coords.extend([p0, p1])
+                    frac = i / segments
+                    c = (frac, 1.0 - frac, 0.2, 0.8)
+                    all_colors.extend([c, c])
+
+    if not all_coords:
+        return
+
+    try:
+        shader = gpu.shader.from_builtin("SMOOTH_COLOR")
+    except Exception:
+        shader = gpu.shader.from_builtin("POLYLINE_SMOOTH_COLOR")
+
+    batch = batch_for_shader(shader, "LINES", {"pos": all_coords, "color": all_colors})
+    gpu.state.blend_set("ALPHA")
+    gpu.state.line_width_set(2.0)
+    shader.bind()
+    batch.draw(shader)
+    gpu.state.blend_set("NONE")
+    gpu.state.line_width_set(1.0)
+
+
+# ===================================================================
+# AUTO-DETECT MESH PARTS
+# ===================================================================
+
+def _find_mesh_matches(config):
+    """Match scene mesh objects to config bone names. Returns dict {bone_name: obj}."""
+    mesh_objects = [o for o in bpy.data.objects if o.type == "MESH"]
+    matches = {}
+
+    for bone_def in config.bones:
+        # Try exact name match first
+        for obj in mesh_objects:
+            obj_lower = obj.name.lower().replace(" ", "_").replace("-", "_")
+            bone_lower = bone_def.name.lower().replace(" ", "_")
+            if obj_lower == bone_lower:
+                matches[bone_def.name] = obj
+                break
+        else:
+            # Try alias patterns
+            aliases = config.part_name_aliases.get(bone_def.name, [])
+            for pattern in aliases:
+                for obj in mesh_objects:
+                    if fnmatch.fnmatch(obj.name.lower(), pattern.lower()):
+                        if bone_def.name not in matches:
+                            matches[bone_def.name] = obj
+                            break
+                if bone_def.name in matches:
+                    break
+
+    return matches
+
+
+def _obj_centroid(obj):
+    """Get world-space centroid of a mesh object."""
+    bb = obj.bound_box
+    local_center = sum((Vector(corner) for corner in bb), Vector()) / 8
+    return obj.matrix_world @ local_center
+
+
+# ===================================================================
 # OPERATORS
 # ===================================================================
 
@@ -775,12 +1128,10 @@ class WEAPONRIG_OT_add_bone(bpy.types.Operator):
             msg += f" ({info['constraints_added']} constraints)"
         if info.get("drivers_added"):
             msg += f" ({info['drivers_added']} drivers)"
-
         self.report({"INFO"}, msg)
 
         context.view_layer.objects.active = arm_obj
         arm_obj.select_set(True)
-
         return {"FINISHED"}
 
 
@@ -797,7 +1148,6 @@ class WEAPONRIG_OT_select_bone(bpy.types.Operator):
             if obj.type == "ARMATURE" and obj.get("weaponrig"):
                 arm_obj = obj
                 break
-
         if arm_obj is None:
             self.report({"WARNING"}, "No WeaponRig armature found")
             return {"CANCELLED"}
@@ -805,10 +1155,120 @@ class WEAPONRIG_OT_select_bone(bpy.types.Operator):
         context.view_layer.objects.active = arm_obj
         arm_obj.select_set(True)
         bpy.ops.object.mode_set(mode="POSE")
-
         for pb in arm_obj.pose.bones:
             pb.bone.select = pb.name == self.bone_name
+        return {"FINISHED"}
 
+
+class WEAPONRIG_OT_auto_detect(bpy.types.Operator):
+    """Auto-detect mesh parts and place bones at their centers"""
+    bl_idname = "weaponrig.auto_detect"
+    bl_label = "Auto-Detect & Place"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        weapon_type = context.scene.weaponrig_weapon_type
+        if weapon_type not in WEAPON_CONFIGS:
+            self.report({"ERROR"}, f"Unknown weapon type: {weapon_type}")
+            return {"CANCELLED"}
+
+        config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
+        matches = _find_mesh_matches(config)
+
+        if not matches:
+            self.report({"WARNING"}, "No mesh parts matched config bone names")
+            return {"CANCELLED"}
+
+        arm_obj = get_or_create_armature(context)
+        added = _get_added_list(context)
+        placed = 0
+
+        for bone_name, mesh_obj in matches.items():
+            if bone_name in added:
+                continue
+            position = _obj_centroid(mesh_obj)
+            info = add_single_bone(config, bone_name, arm_obj, position, context)
+            if "error" not in info:
+                added.append(bone_name)
+                placed += 1
+
+        context.scene.weaponrig_added_bones = json.dumps(added)
+        self.report({"INFO"}, f"Auto-placed {placed} bones from {len(matches)} matched mesh parts")
+
+        context.view_layer.objects.active = arm_obj
+        arm_obj.select_set(True)
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_assign_weights(bpy.types.Operator):
+    """Assign each vertex to its nearest bone with weight 1.0 (rigid body)"""
+    bl_idname = "weaponrig.assign_weights"
+    bl_label = "Assign Mesh to Bones"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if arm_obj is None:
+            self.report({"ERROR"}, "No WeaponRig armature found")
+            return {"CANCELLED"}
+
+        # Collect target meshes
+        mesh_objects = [o for o in context.selected_objects if o.type == "MESH"]
+        if not mesh_objects:
+            mesh_objects = [o for o in context.scene.objects if o.type == "MESH"]
+        if not mesh_objects:
+            self.report({"ERROR"}, "No mesh objects found")
+            return {"CANCELLED"}
+
+        if context.object and context.object.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        # Build KDTree from bone head positions
+        bones = arm_obj.pose.bones
+        bone_count = len(bones)
+        if bone_count == 0:
+            self.report({"ERROR"}, "No bones in armature")
+            return {"CANCELLED"}
+
+        kd = kdtree.KDTree(bone_count)
+        bone_names = []
+        for i, pb in enumerate(bones):
+            world_pos = arm_obj.matrix_world @ pb.head
+            kd.insert(world_pos, i)
+            bone_names.append(pb.name)
+        kd.balance()
+
+        total_assigned = 0
+        for mesh_obj in mesh_objects:
+            # Clear existing vertex groups
+            mesh_obj.vertex_groups.clear()
+
+            # Create vertex group for each bone
+            vg_map = {}
+            for bname in bone_names:
+                vg = mesh_obj.vertex_groups.new(name=bname)
+                vg_map[bname] = vg
+
+            # Assign each vertex to nearest bone
+            mesh = mesh_obj.data
+            for vert in mesh.vertices:
+                world_co = mesh_obj.matrix_world @ vert.co
+                co, idx, dist = kd.find(world_co)
+                nearest_bone = bone_names[idx]
+                vg_map[nearest_bone].add([vert.index], 1.0, "REPLACE")
+                total_assigned += 1
+
+            # Add armature modifier if not present
+            has_mod = any(m.type == "ARMATURE" for m in mesh_obj.modifiers)
+            if not has_mod:
+                mod = mesh_obj.modifiers.new(name="WeaponRig", type="ARMATURE")
+                mod.object = arm_obj
+
+        self.report({"INFO"}, f"Assigned {total_assigned} vertices across {len(mesh_objects)} mesh(es)")
         return {"FINISHED"}
 
 
@@ -867,7 +1327,6 @@ def _selection_centroid(context):
     if selected:
         centroid = sum((o.location for o in selected), Vector()) / len(selected)
         return centroid
-
     return None
 
 
@@ -886,7 +1345,7 @@ def _wrap_text(layout, text, width=40):
 
 
 # ===================================================================
-# UI PANEL
+# UI PANELS
 # ===================================================================
 
 class WEAPONRIG_PT_main(bpy.types.Panel):
@@ -914,6 +1373,13 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
         config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
         added = set(_get_added_list(context))
 
+        # Auto-detect button
+        mesh_count = sum(1 for o in bpy.data.objects if o.type == "MESH")
+        if mesh_count > 0:
+            box = layout.box()
+            box.label(text=f"Scene Meshes: {mesh_count}", icon="MESH_DATA")
+            box.operator("weaponrig.auto_detect", text="Auto-Detect & Place Bones", icon="VIEWZOOM")
+
         # Bone checklist
         box = layout.box()
         box.label(text="Bone Checklist", icon="ARMATURE_DATA")
@@ -938,7 +1404,6 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
                     optional_done += 1
 
             row = box.row(align=True)
-
             if is_added:
                 row.label(text="", icon="CHECKMARK")
                 row.label(text=bone_def.name)
@@ -952,7 +1417,6 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
                 else:
                     row.label(text="", icon="RADIOBUT_OFF")
                 row.label(text=bone_def.name)
-
                 if next_bone is None:
                     next_bone = bone_def
 
@@ -968,12 +1432,10 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
 
             if next_bone.description:
                 _wrap_text(box, next_bone.description)
-
             box.separator()
 
             if next_bone.movement_type != "static":
                 box.label(text=f"Movement: {next_bone.movement_type} on {next_bone.axis}", icon="CON_LOCLIKE")
-
             if next_bone.parent:
                 box.label(text=f"Parent: {next_bone.parent}", icon="CON_CHILDOF")
 
@@ -995,12 +1457,10 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
                     box.label(text=f"  {display_key}: {val}")
 
             box.separator()
-
             row = box.row(align=True)
             op = row.operator("weaponrig.add_bone", text="Add at 3D Cursor", icon="CURSOR")
             op.bone_name = next_bone.name
             op.use_selection = False
-
             op = row.operator("weaponrig.add_bone", text="Add at Selection", icon="RESTRICT_SELECT_OFF")
             op.bone_name = next_bone.name
             op.use_selection = True
@@ -1008,16 +1468,47 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
             box = layout.box()
             box.label(text="All bones added!", icon="CHECKMARK")
 
+        # Weight assignment button (show when bones exist)
+        if added:
+            box = layout.box()
+            box.label(text="Mesh Assignment", icon="MOD_VERTEX_WEIGHT")
+            box.operator("weaponrig.assign_weights", text="Assign Mesh to Bones", icon="BONE_DATA")
+
+
+class WEAPONRIG_PT_cycle(bpy.types.Panel):
+    """Firing cycle test slider"""
+    bl_label = "Firing Cycle Test"
+    bl_idname = "WEAPONRIG_PT_cycle"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "WeaponRig"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context):
+        added = _get_added_list(context)
+        return len(added) > 0
+
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.weaponrig_props
+        layout.prop(props, "cycle_progress", slider=True)
+        layout.label(text="Drag to simulate firing cycle", icon="PLAY")
+
 
 # ===================================================================
 # REGISTRATION
 # ===================================================================
 
 _classes = (
+    WeaponRigProperties,
     WEAPONRIG_OT_add_bone,
     WEAPONRIG_OT_select_bone,
+    WEAPONRIG_OT_auto_detect,
+    WEAPONRIG_OT_assign_weights,
     WEAPONRIG_OT_import_mesh,
     WEAPONRIG_PT_main,
+    WEAPONRIG_PT_cycle,
 )
 
 
@@ -1026,6 +1517,7 @@ def _weapon_type_items(self, context):
 
 
 def register():
+    global _draw_handler
     for cls in _classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.weaponrig_weapon_type = bpy.props.EnumProperty(
@@ -1038,9 +1530,18 @@ def register():
         description="JSON list of added bone names",
         default="",
     )
+    bpy.types.Scene.weaponrig_props = bpy.props.PointerProperty(type=WeaponRigProperties)
+    _draw_handler = bpy.types.SpaceView3D.draw_handler_add(
+        _draw_constraint_ranges, (), "WINDOW", "POST_VIEW"
+    )
 
 
 def unregister():
+    global _draw_handler
+    if _draw_handler is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_draw_handler, "WINDOW")
+        _draw_handler = None
+    del bpy.types.Scene.weaponrig_props
     del bpy.types.Scene.weaponrig_added_bones
     del bpy.types.Scene.weaponrig_weapon_type
     for cls in reversed(_classes):
