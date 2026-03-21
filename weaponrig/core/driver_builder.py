@@ -2,7 +2,7 @@
 
 import bpy
 
-from ..database.schema import DriverDef, WeaponConfig
+from ..database.schema import BoneDef, DriverDef, WeaponConfig
 
 # Map "property.axis" strings to bpy transform type constants.
 _PROPERTY_TO_TRANSFORM = {
@@ -18,6 +18,20 @@ _PROPERTY_TO_TRANSFORM = {
 }
 
 _AXIS_INDEX = {"x": 0, "y": 1, "z": 2, "w": 3}
+
+
+def apply_bone_drivers(arm_obj, bone_def):
+    """Add drivers for a single bone. Returns count of drivers added."""
+    if not bone_def.drivers:
+        return 0
+    pose_bone = arm_obj.pose.bones.get(bone_def.name)
+    if pose_bone is None:
+        return 0
+    count = 0
+    for driver_def in bone_def.drivers:
+        _add_driver(pose_bone, driver_def, arm_obj, bone_def.parameters)
+        count += 1
+    return count
 
 
 def apply_drivers(

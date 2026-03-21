@@ -126,6 +126,7 @@ class BoneDef:
     movement_type: str = "static"
     axis: Optional[str] = None
     description: Optional[str] = None
+    placement: Optional[str] = None
     constraints: list[ConstraintDef] = field(default_factory=list)
     drivers: list[DriverDef] = field(default_factory=list)
     parameters: dict[str, Any] = field(default_factory=dict)
@@ -162,6 +163,7 @@ class BoneDef:
             movement_type=movement_type,
             axis=d.get("axis"),
             description=d.get("description"),
+            placement=d.get("placement"),
             constraints=constraints,
             drivers=drivers,
             parameters=d.get("parameters", {}),
@@ -184,7 +186,6 @@ class WeaponConfig:
     fire_modes: list[str] = field(default_factory=list)
     cyclic_rate_rpm: dict[str, Optional[float]] = field(default_factory=dict)
     bones: list[BoneDef] = field(default_factory=list)
-    unified_skeleton_extra_bones: list[str] = field(default_factory=list)
     physics: dict[str, Any] = field(default_factory=dict)
     part_name_aliases: dict[str, list[str]] = field(default_factory=dict)
 
@@ -226,9 +227,6 @@ class WeaponConfig:
             fire_modes=d.get("fire_modes", []),
             cyclic_rate_rpm=d.get("cyclic_rate_rpm", {}),
             bones=bones,
-            unified_skeleton_extra_bones=d.get(
-                "unified_skeleton_extra_bones", []
-            ),
             physics=d.get("physics", {}),
             part_name_aliases=d.get("part_name_aliases", {}),
         )
