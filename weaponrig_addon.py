@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 13, 0),
+    "version": (0, 14, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -2937,94 +2937,6 @@ class WEAPONRIG_OT_new_config(bpy.types.Operator):
 
 
 # ===================================================================
-# REGISTRATION
-# ===================================================================
-
-_classes = (
-    WeaponRigProperties,
-    WEAPONRIG_OT_add_bone,
-    WEAPONRIG_OT_select_bone,
-    WEAPONRIG_OT_add_all_bones,
-    WEAPONRIG_OT_skip_bone,
-    WEAPONRIG_OT_auto_detect,
-    WEAPONRIG_OT_assign_weights,
-    WEAPONRIG_OT_bind_all,
-    WEAPONRIG_OT_test_rig,
-    WEAPONRIG_OT_validate_export,
-    WEAPONRIG_OT_save_to_library,
-    WEAPONRIG_OT_new_config,
-    WEAPONRIG_OT_import_mesh,
-    WEAPONRIG_OT_inspect_mesh,
-    WEAPONRIG_OT_apply_transforms,
-    WEAPONRIG_OT_normalize_orientation,
-    WEAPONRIG_OT_separate_sharp,
-    WEAPONRIG_OT_post_cleanup,
-    WEAPONRIG_OT_generate_cycle,
-    WEAPONRIG_OT_generate_recoil,
-    WEAPONRIG_OT_generate_fire_modes,
-    WEAPONRIG_OT_segment_mesh,
-    WEAPONRIG_OT_export_fbx,
-    WEAPONRIG_OT_play_cycle,
-    WEAPONRIG_PT_main,
-    WEAPONRIG_PT_cycle,
-)
-
-
-def _weapon_type_items(self, context):
-    return [(k, v["display_name"], v.get("description", "")) for k, v in WEAPON_CONFIGS.items()]
-
-
-def register():
-    global _draw_handler
-    for cls in _classes:
-        bpy.utils.register_class(cls)
-    bpy.types.Scene.weaponrig_weapon_type = bpy.props.EnumProperty(
-        name="Weapon Type",
-        description="Select the weapon operating system",
-        items=_weapon_type_items,
-    )
-    bpy.types.Scene.weaponrig_added_bones = bpy.props.StringProperty(
-        name="Added Bones",
-        description="JSON list of added bone names",
-        default="",
-    )
-    bpy.types.Scene.weaponrig_skipped_bones = bpy.props.StringProperty(
-        name="Skipped Bones",
-        description="JSON list of skipped bone names",
-        default="",
-    )
-    bpy.types.Scene.weaponrig_naming = bpy.props.EnumProperty(
-        name="Naming",
-        description="Bone naming convention",
-        items=[
-            ("TITLE", "Title Case", "Bolt Carrier"),
-            ("SNAKE", "snake_case", "bolt_carrier"),
-            ("PASCAL", "PascalCase", "BoltCarrier"),
-            ("UPPER_SNAKE", "UPPER_SNAKE", "BOLT_CARRIER"),
-        ],
-        default="TITLE",
-    )
-    bpy.types.Scene.weaponrig_props = bpy.props.PointerProperty(type=WeaponRigProperties)
-    _draw_handler = bpy.types.SpaceView3D.draw_handler_add(
-        _draw_constraint_ranges, (), "WINDOW", "POST_VIEW"
-    )
-
-
-def unregister():
-    global _draw_handler
-    if _draw_handler is not None:
-        bpy.types.SpaceView3D.draw_handler_remove(_draw_handler, "WINDOW")
-        _draw_handler = None
-    del bpy.types.Scene.weaponrig_props
-    del bpy.types.Scene.weaponrig_naming
-    del bpy.types.Scene.weaponrig_skipped_bones
-    del bpy.types.Scene.weaponrig_added_bones
-    del bpy.types.Scene.weaponrig_weapon_type
-    for cls in reversed(_classes):
-        bpy.utils.unregister_class(cls)
-
-
-# ===================================================================
 # PHYSICS FIRING CYCLE SIMULATOR (v0.4)
 # ===================================================================
 
@@ -3402,6 +3314,162 @@ def _segment_by_dihedral(obj, angle_threshold_deg=45.0):
         return regions
     finally:
         bm.free()
+
+
+def _smart_merge_segments(segments, bm, expected_count=15):
+    """Merge over-segmented results: absorb tiny fragments into neighbors."""
+    if len(segments) <= expected_count:
+        return segments
+
+    total_faces = len(bm.faces)
+    min_faces = max(10, int(total_faces * 0.02))
+
+    # Split into large and tiny
+    large = []
+    tiny = []
+    for seg in segments:
+        if len(seg) < min_faces:
+            tiny.append(seg)
+        else:
+            large.append(seg)
+
+    # Absorb tiny fragments into most-adjacent large segment
+    bm.faces.ensure_lookup_table()
+    for t in tiny:
+        best_idx = 0
+        best_shared = 0
+        for li, lseg in enumerate(large):
+            shared = 0
+            for fi in t:
+                if fi >= len(bm.faces):
+                    continue
+                for edge in bm.faces[fi].edges:
+                    for lf in edge.link_faces:
+                        if lf.index in lseg:
+                            shared += 1
+            if shared > best_shared:
+                best_shared = shared
+                best_idx = li
+        if large:
+            large[best_idx].update(t)
+
+    return large if large else segments
+
+
+class WEAPONRIG_OT_auto_separate(bpy.types.Operator):
+    """Auto-separate mesh: loose parts → angle flood fill → smart merge"""
+    bl_idname = "weaponrig.auto_separate"
+    bl_label = "Auto-Separate"
+    bl_options = {"REGISTER", "UNDO"}
+
+    angle_threshold: bpy.props.FloatProperty(
+        name="Angle Threshold", default=30.0, min=15.0, max=60.0,
+        description="Face angle threshold for boundary detection (lower = more parts)",
+    )
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != "MESH":
+            self.report({"ERROR"}, "Select a mesh object")
+            return {"CANCELLED"}
+
+        # Step 1: Check for loose parts first
+        islands = _separate_loose_parts(obj)
+        if len(islands) > 1:
+            context.view_layer.objects.active = obj
+            obj.select_set(True)
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.select_all(action="SELECT")
+            bpy.ops.mesh.separate(type="LOOSE")
+            bpy.ops.object.mode_set(mode="OBJECT")
+            result_objs = [o for o in context.selected_objects if o.type == "MESH"]
+            self.report({"INFO"}, f"Phase 1: Separated {len(result_objs)} loose parts")
+
+            # Step 2: For each large remaining part, try angle flood fill
+            further_split = 0
+            for sub_obj in list(result_objs):
+                sub_islands = _separate_loose_parts(sub_obj)
+                if len(sub_islands) <= 1 and len(sub_obj.data.polygons) > 100:
+                    segments = _segment_by_dihedral(sub_obj, self.angle_threshold)
+                    if len(segments) > 1:
+                        # Smart merge to reduce over-segmentation
+                        import bmesh as bm_mod
+                        bm = bm_mod.new()
+                        try:
+                            bm.from_mesh(sub_obj.data)
+                            segments = _smart_merge_segments(segments, bm, expected_count=8)
+                        finally:
+                            bm.free()
+
+                        if len(segments) > 1:
+                            # Apply separation via vertex groups
+                            context.view_layer.objects.active = sub_obj
+                            sub_obj.select_set(True)
+                            bpy.ops.object.mode_set(mode="EDIT")
+                            import bmesh as bm_edit
+                            bm2 = bm_edit.from_edit_mesh(sub_obj.data)
+                            bm2.faces.ensure_lookup_table()
+                            for si, seg in enumerate(segments):
+                                vg = sub_obj.vertex_groups.new(name=f"AutoSeg_{si:03d}")
+                                bpy.ops.mesh.select_all(action="DESELECT")
+                                for fi in seg:
+                                    if fi < len(bm2.faces):
+                                        bm2.faces[fi].select = True
+                                bm_edit.update_edit_mesh(sub_obj.data)
+                                bpy.ops.object.vertex_group_assign()
+                            bpy.ops.mesh.select_all(action="SELECT")
+                            bpy.ops.mesh.separate(type="LOOSE")
+                            bpy.ops.object.mode_set(mode="OBJECT")
+                            further_split += len(segments) - 1
+
+            total = len([o for o in bpy.data.objects if o.type == "MESH"])
+            self.report({"INFO"}, f"Auto-separated: {total} total parts ({further_split} from angle analysis)")
+            return {"FINISHED"}
+
+        # No loose parts — try pure angle flood fill on fused mesh
+        segments = _segment_by_dihedral(obj, self.angle_threshold)
+        if len(segments) <= 1:
+            self.report({"WARNING"}, "Could not auto-separate. Try: By Material, By Sharp Edges, or lower angle threshold")
+            return {"CANCELLED"}
+
+        # Smart merge
+        import bmesh as bm_mod
+        bm = bm_mod.new()
+        try:
+            bm.from_mesh(obj.data)
+            segments = _smart_merge_segments(segments, bm, expected_count=10)
+        finally:
+            bm.free()
+
+        # Separate by assigning to vertex groups then loose parts
+        context.view_layer.objects.active = obj
+        obj.select_set(True)
+        bpy.ops.object.mode_set(mode="EDIT")
+        import bmesh as bm_edit
+        bm2 = bm_edit.from_edit_mesh(obj.data)
+        bm2.faces.ensure_lookup_table()
+
+        for si, seg in enumerate(segments):
+            vg = obj.vertex_groups.new(name=f"AutoSeg_{si:03d}")
+            bpy.ops.mesh.select_all(action="DESELECT")
+            for fi in seg:
+                if fi < len(bm2.faces):
+                    bm2.faces[fi].select = True
+            bm_edit.update_edit_mesh(obj.data)
+            bpy.ops.object.vertex_group_assign()
+
+        # Use edge split at segment boundaries then separate by loose
+        bpy.ops.mesh.select_all(action="SELECT")
+        bpy.ops.mesh.edge_split()
+        bpy.ops.mesh.separate(type="LOOSE")
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+        total = len([o for o in context.selected_objects if o.type == "MESH"])
+        self.report({"INFO"}, f"Auto-separated into {total} parts (angle threshold: {self.angle_threshold}°)")
+        return {"FINISHED"}
 
 
 # ===================================================================
@@ -3894,6 +3962,90 @@ class WEAPONRIG_OT_validate_export(bpy.types.Operator):
             self.report({"INFO"}, "Ready for export")
 
         return {"FINISHED"}
+
+
+# ===================================================================
+# REGISTRATION (must be after ALL class definitions)
+# ===================================================================
+
+_classes = (
+    WeaponRigProperties,
+    WEAPONRIG_OT_add_bone,
+    WEAPONRIG_OT_select_bone,
+    WEAPONRIG_OT_add_all_bones,
+    WEAPONRIG_OT_skip_bone,
+    WEAPONRIG_OT_auto_detect,
+    WEAPONRIG_OT_assign_weights,
+    WEAPONRIG_OT_bind_all,
+    WEAPONRIG_OT_test_rig,
+    WEAPONRIG_OT_validate_export,
+    WEAPONRIG_OT_save_to_library,
+    WEAPONRIG_OT_new_config,
+    WEAPONRIG_OT_import_mesh,
+    WEAPONRIG_OT_inspect_mesh,
+    WEAPONRIG_OT_apply_transforms,
+    WEAPONRIG_OT_normalize_orientation,
+    WEAPONRIG_OT_separate_sharp,
+    WEAPONRIG_OT_post_cleanup,
+    WEAPONRIG_OT_auto_separate,
+    WEAPONRIG_OT_generate_cycle,
+    WEAPONRIG_OT_generate_recoil,
+    WEAPONRIG_OT_generate_fire_modes,
+    WEAPONRIG_OT_segment_mesh,
+    WEAPONRIG_OT_export_fbx,
+    WEAPONRIG_OT_play_cycle,
+    WEAPONRIG_PT_main,
+    WEAPONRIG_PT_cycle,
+)
+
+
+def _weapon_type_items(self, context):
+    return [(k, v["display_name"], v.get("description", "")) for k, v in WEAPON_CONFIGS.items()]
+
+
+def register():
+    global _draw_handler
+    for cls in _classes:
+        bpy.utils.register_class(cls)
+    bpy.types.Scene.weaponrig_weapon_type = bpy.props.EnumProperty(
+        name="Weapon Type",
+        description="Select the weapon operating system",
+        items=_weapon_type_items,
+    )
+    bpy.types.Scene.weaponrig_added_bones = bpy.props.StringProperty(
+        name="Added Bones", default="",
+    )
+    bpy.types.Scene.weaponrig_skipped_bones = bpy.props.StringProperty(
+        name="Skipped Bones", default="",
+    )
+    bpy.types.Scene.weaponrig_naming = bpy.props.EnumProperty(
+        name="Naming",
+        items=[
+            ("TITLE", "Title Case", "Bolt Carrier"),
+            ("SNAKE", "snake_case", "bolt_carrier"),
+            ("PASCAL", "PascalCase", "BoltCarrier"),
+            ("UPPER_SNAKE", "UPPER_SNAKE", "BOLT_CARRIER"),
+        ],
+        default="TITLE",
+    )
+    bpy.types.Scene.weaponrig_props = bpy.props.PointerProperty(type=WeaponRigProperties)
+    _draw_handler = bpy.types.SpaceView3D.draw_handler_add(
+        _draw_constraint_ranges, (), "WINDOW", "POST_VIEW"
+    )
+
+
+def unregister():
+    global _draw_handler
+    if _draw_handler is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_draw_handler, "WINDOW")
+        _draw_handler = None
+    del bpy.types.Scene.weaponrig_props
+    del bpy.types.Scene.weaponrig_naming
+    del bpy.types.Scene.weaponrig_skipped_bones
+    del bpy.types.Scene.weaponrig_added_bones
+    del bpy.types.Scene.weaponrig_weapon_type
+    for cls in reversed(_classes):
+        bpy.utils.unregister_class(cls)
 
 
 if __name__ == "__main__":
