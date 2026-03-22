@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 17, 0),
+    "version": (0, 18, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -1193,6 +1193,7 @@ def add_single_bone(config, bone_name, armature_obj, position, context):
     eb = armature_obj.data.edit_bones.get(display_name)
     if eb is None:
         eb = armature_obj.data.edit_bones.new(display_name)
+    eb.use_envelope_multiply = False  # T22
     eb.head = position.copy()
 
     # Orient bone based on movement type (critical for LOCAL-space constraints)
@@ -1380,20 +1381,27 @@ def _apply_bone_drivers(arm_obj, bone_def, context=None):
             while fcurve.keyframe_points:
                 fcurve.keyframe_points.remove(fcurve.keyframe_points[0])
 
+            # T19: Insert ALL keyframes first, THEN set properties by index.
+            # insert() may invalidate references to previously inserted keyframes.
             sorted_kfs = sorted(ddef.cam_curve_keyframes, key=lambda k: k.carrier_travel_pct)
-            for i, kf in enumerate(sorted_kfs):
+            for kf in sorted_kfs:
                 x_val = kf.carrier_travel_pct * travel   # POSITIVE
                 y_val = kf.bolt_rotation_pct * rot_rad   # POSITIVE
-                pt = fcurve.keyframe_points.insert(x_val, y_val, options={"FAST"})
-                pt.interpolation = "BEZIER"
-                pt.handle_left_type = "AUTO_CLAMPED"
-                pt.handle_right_type = "AUTO_CLAMPED"
-                if i > 0 and abs(sorted_kfs[i-1].bolt_rotation_pct - kf.bolt_rotation_pct) < 0.001:
-                    pt.handle_left_type = "VECTOR"
-                if i < len(sorted_kfs) - 1 and abs(sorted_kfs[i+1].bolt_rotation_pct - kf.bolt_rotation_pct) < 0.001:
-                    pt.handle_right_type = "VECTOR"
+                fcurve.keyframe_points.insert(x_val, y_val, options={"FAST"})
 
             fcurve.keyframe_points.sort()
+
+            # NOW set handle types by re-accessing by index (safe)
+            for i, kp in enumerate(fcurve.keyframe_points):
+                kp.interpolation = "BEZIER"
+                kp.handle_left_type = "AUTO_CLAMPED"
+                kp.handle_right_type = "AUTO_CLAMPED"
+                # Dwell zones: flat handles where adjacent keyframes have same output
+                if i > 0 and abs(fcurve.keyframe_points[i-1].co[1] - kp.co[1]) < 0.0001:
+                    kp.handle_left_type = "VECTOR"
+                if i < len(fcurve.keyframe_points) - 1 and abs(fcurve.keyframe_points[i+1].co[1] - kp.co[1]) < 0.0001:
+                    kp.handle_right_type = "VECTOR"
+
             fcurve.update()
         else:
             # Strip negatives from legacy expressions
@@ -1798,6 +1806,7 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
             if eb is None:
                 eb = arm_obj.data.edit_bones.new(display_name)
             eb.use_deform = True
+            eb.use_envelope_multiply = False  # T22: prevent envelope deformation
 
             # Position at matched mesh centroid, or fallback to cursor
             matched_mesh = mesh_matches.get(bone_def.name)
@@ -1916,6 +1925,11 @@ def _bind_mesh_to_bone(mesh_obj, armature_obj, bone_name):
     if arm_mod is None:
         arm_mod = mesh_obj.modifiers.new(name="Armature", type="ARMATURE")
     arm_mod.object = armature_obj
+
+    # T20: Force armature modifier to recache vertex group lookups
+    arm_mod.show_viewport = False
+    arm_mod.show_viewport = True
+    mesh_obj.data.update()
 
 
 class WEAPONRIG_OT_skip_bone(bpy.types.Operator):
