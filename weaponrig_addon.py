@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 15, 0),
+    "version": (0, 16, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -1773,9 +1773,13 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
         # PHASE 1: Create ALL bones in one EDIT session
         bpy.ops.object.mode_set(mode="EDIT")
         arm_inv = arm_obj.matrix_world.inverted()
+        build_warnings = []
         for bone_def in bones_to_add:
             display_name = _format_bone_name(bone_def.name, convention)
-            eb = arm_obj.data.edit_bones.new(display_name)
+            # BUG A.1: Reuse existing bone if present (prevents duplicates on rebuild)
+            eb = arm_obj.data.edit_bones.get(display_name)
+            if eb is None:
+                eb = arm_obj.data.edit_bones.new(display_name)
             eb.use_deform = True
 
             # Position at matched mesh centroid, or fallback to cursor
@@ -1805,12 +1809,21 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
 
         bpy.ops.object.mode_set(mode="OBJECT")
 
-        # PHASE 2: Apply ALL constraints, drivers, shapes
+        # PHASE 2: Apply ALL constraints, drivers, shapes (H.3: error collection)
         created = 0
         for bone_def in bones_to_add:
-            _apply_bone_constraints(arm_obj, bone_def, context)
-            _apply_bone_drivers(arm_obj, bone_def, context)
-            _assign_bone_shape(arm_obj, bone_def, context)
+            try:
+                _apply_bone_constraints(arm_obj, bone_def, context)
+            except Exception as e:
+                build_warnings.append(f"Constraint on {bone_def.name}: {e}")
+            try:
+                _apply_bone_drivers(arm_obj, bone_def, context)
+            except Exception as e:
+                build_warnings.append(f"Driver on {bone_def.name}: {e}")
+            try:
+                _assign_bone_shape(arm_obj, bone_def, context)
+            except Exception:
+                pass  # Shape failure is cosmetic, not critical
             created += 1
 
         # PHASE 3: Bind matched meshes to bones
@@ -1819,12 +1832,14 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
             matched_mesh = mesh_matches.get(bone_def.name)
             if matched_mesh:
                 display_name = _format_bone_name(bone_def.name, convention)
-                _bind_mesh_to_bone(matched_mesh, arm_obj, display_name)
-                bound += 1
+                try:
+                    _bind_mesh_to_bone(matched_mesh, arm_obj, display_name)
+                    bound += 1
+                except Exception as e:
+                    build_warnings.append(f"Binding {bone_def.name}: {e}")
 
         arm_obj.update_tag()
         context.view_layer.update()
-        # Force full driver evaluation for chained drivers (BUG 4.2)
         frame = context.scene.frame_current
         context.scene.frame_set(frame + 1)
         context.scene.frame_set(frame)
@@ -1836,7 +1851,12 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
                 added_list.append(bone_def.name)
         context.scene.weaponrig_added_bones = json.dumps(added_list)
 
+        # Report results (H.3: show warnings to rigger, not just console)
         matched_count = len(mesh_matches)
+        if build_warnings:
+            for w in build_warnings:
+                self.report({"WARNING"}, w)
+            self.report({"WARNING"}, f"Built with {len(build_warnings)} warnings")
         self.report({"INFO"}, f"Added {created} bones, positioned {matched_count} on mesh, bound {bound} parts")
         return {"FINISHED"}
 
