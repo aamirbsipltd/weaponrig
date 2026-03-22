@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 4, 0),
+    "version": (0, 5, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -599,6 +599,192 @@ WEAPON_CONFIGS = {
         "part_name_aliases": {"Slide": ["*slide*"], "Barrel": ["*barrel*"], "Frame": ["*frame*", "*receiver*"],
                               "Trigger": ["*trigger*"], "Hammer": ["*hammer*"], "Magazine": ["*mag*"]},
     },
+    "g11_rotary_breech": {
+        "schema_version": "1.0",
+        "operating_system": "g11_rotary_breech",
+        "display_name": "HK G11 Rotary Breech (Caseless)",
+        "description": "Rotary breech with Geneva drive, caseless ammo. Most complex infantry weapon ever produced.",
+        "fire_modes": ["semi", "auto", "burst_3"],
+        "cyclic_rate_rpm": {"semi": None, "auto": 460, "burst_3": 2100},
+        "bones": [
+            {"name": "Outer Shell", "parent": None, "presence": "required", "movement_type": "static",
+             "description": "Outer polymer housing — what the shooter holds. All internal mechanisms float inside",
+             "placement": "Place at the center of the outer housing, near the pistol grip"},
+            {"name": "Floating Assembly", "parent": "Outer Shell", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.045, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"assembly_travel_m": 0.045, "assembly_mass_kg": 1.8},
+             "description": "Barrel + breech + feed mech slide backward inside shell. In burst mode, fires 3 rounds before hitting buffer — shooter feels recoil only after 3rd round",
+             "placement": "Place at the front of the internal mechanism, centered in the outer shell"},
+            {"name": "Barrel", "parent": "Floating Assembly", "presence": "required", "movement_type": "static",
+             "description": "Fixed relative to floating assembly. Moves with it during recoil",
+             "placement": "Place at the chamber end of the barrel"},
+            {"name": "Breech Cylinder", "parent": "Floating Assembly", "presence": "required", "movement_type": "rotate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_y": 0.0, "max_y": 6.283,
+                              "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"mechanism_type": "geneva_drive", "slot_count": 4, "rotation_per_step_degrees": 90, "motion_profile": "snap_dwell"},
+             "description": "Rotating cylinder with chamber bored through. Rotates exactly 90 deg per step via 4-slot Geneva mechanism. Positions: feed(0), fire(90), extract(180), clear(270)",
+             "placement": "Place at the center of the breech cylinder, on the rotation axis"},
+            {"name": "Chamber Insert", "parent": "Breech Cylinder", "presence": "optional", "movement_type": "static",
+             "description": "Replaceable chamber piece inside breech cylinder. Rotates with it",
+             "placement": "Place inside the breech cylinder bore"},
+            {"name": "Gas Piston", "parent": "Floating Assembly", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.04, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"piston_stroke_m": 0.04},
+             "description": "Gas piston driven rearward. Linear stroke converted to breech rotation through gear train (connecting rod > spur gear > actuating gear)",
+             "placement": "Place at the gas piston head, above the barrel"},
+            {"name": "Connecting Rod", "parent": "Gas Piston", "presence": "expected", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -0.524, "max_x": 0.524,
+                              "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "description": "Links piston linear motion to spur gear. Pivots ~30 deg each direction",
+             "placement": "Place at the pivot connecting piston to spur gear"},
+            {"name": "Spur Gear", "parent": "Floating Assembly", "presence": "expected", "movement_type": "rotate", "axis": "X",
+             "drivers": [{"driven_property": "rotation_euler.x", "driver_bone": "Gas Piston",
+                          "driver_property": "location.y", "expression": "var * -15.0",
+                          "description": "Spur gear rotates as gas piston reciprocates"}],
+             "description": "Intermediate gear converting connecting rod oscillation to rotation. Meshes with actuating gear",
+             "placement": "Place at the spur gear axle"},
+            {"name": "Actuating Gear", "parent": "Floating Assembly", "presence": "expected", "movement_type": "rotate", "axis": "X",
+             "description": "Final gear meshing with breech cylinder base. Drives Geneva mechanism for 90-deg snap rotations",
+             "placement": "Place at the actuating gear axle, adjacent to breech cylinder base"},
+            {"name": "Striker", "parent": "Floating Assembly", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.008, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "description": "Fires the caseless round when breech cylinder aligns with barrel at 90-deg position",
+             "placement": "Place at the rear of the breech, on bore axis"},
+            {"name": "Cocking Handle", "parent": "Outer Shell", "presence": "expected", "movement_type": "rotate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_y": -6.283, "max_y": 0.0,
+                              "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 360, "direction": "counterclockwise"},
+             "description": "Unique rotary cocking handle — 360 deg counterclockwise rotation to charge. Unlike any other firearm",
+             "placement": "Place at the cocking handle axle on the outer shell"},
+            {"name": "Toothed Wheel", "parent": "Cocking Handle", "presence": "optional", "movement_type": "rotate", "axis": "Y",
+             "description": "Gear wheel driven by cocking handle rotation",
+             "placement": "Place on the same axle as cocking handle, inside housing"},
+            {"name": "Magazine Follower", "parent": "Floating Assembly", "presence": "optional", "movement_type": "translate", "axis": "Z",
+             "description": "Pushes caseless rounds from top-mounted magazine down into breech cylinder feed position",
+             "placement": "Place at the top of the magazine feed area"},
+            {"name": "Trigger", "parent": "Outer Shell", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -0.262, "max_x": 0.0,
+                              "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "description": "Standard trigger — connected to outer shell so feel is consistent regardless of floating assembly position",
+             "placement": "Place at the trigger pin in the pistol grip area"},
+            {"name": "Selector", "parent": "Outer Shell", "presence": "expected", "movement_type": "rotate", "axis": "Z",
+             "constraints": [{"type": "LIMIT_ROTATION", "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"positions": [{"name": "safe", "angle_degrees": 0}, {"name": "semi", "angle_degrees": 90},
+                                          {"name": "burst", "angle_degrees": 180}, {"name": "auto", "angle_degrees": 270}]},
+             "description": "4-position: Safe, Semi, 3-round Burst (2100 RPM!), Full Auto (460 RPM). Burst fires 3 rounds before shooter feels recoil",
+             "placement": "Place at the selector lever on the left side"},
+        ],
+        "physics": {"gas_impulse_duration_ms": 0.8, "carrier_mass_kg": 1.8, "carrier_peak_velocity_m_per_s": 3.0,
+                    "buffer_spring_rate_n_per_m": 5000, "bolt_carrier_mass_kg": 1.8,
+                    "burst_rounds_before_buffer": 3, "burst_assembly_travel_m": 0.045},
+        "part_name_aliases": {"Outer Shell": ["*housing*", "*shell*", "*body*"], "Floating Assembly": ["*inner*", "*assembly*"],
+                              "Breech Cylinder": ["*breech*", "*cylinder*", "*rotary*"], "Gas Piston": ["*piston*"],
+                              "Striker": ["*striker*", "*firing*pin*"], "Cocking Handle": ["*cocking*", "*charging*"],
+                              "Trigger": ["*trigger*"], "Selector": ["*selector*", "*fire*select*"]},
+    },
+    "rm277_bullpup": {
+        "schema_version": "1.0",
+        "operating_system": "rm277_bullpup_sria",
+        "display_name": "RM277 Bullpup (SRIA)",
+        "description": "General Dynamics / True Velocity bullpup with Short Recoil Impulse Averaging. 75% recoil reduction. Patent US8794121B2.",
+        "fire_modes": ["semi", "auto"],
+        "cyclic_rate_rpm": {"semi": None, "auto": 550},
+        "bones": [
+            {"name": "Outer Receiver", "parent": None, "presence": "required", "movement_type": "static",
+             "description": "Outer receiver housing — fixed frame the shooter holds. All internal mechanisms float inside on guide rails",
+             "placement": "Place at the pistol grip area, center of the outer receiver"},
+            {"name": "Barrel Assembly", "parent": "Outer Receiver", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.014, "max_y": 0.014, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"sria_stroke_m": 0.0137, "barrel_length_mm": 472, "recoil_reduction_percent": 75},
+             "description": "Barrel + barrel extension float inside outer receiver. SRIA stroke ±13.7mm. Drive spring pre-loads forward momentum — when round fires, assembly is already moving forward, drastically reducing net rearward impulse",
+             "placement": "Place at the barrel extension, where barrel meets the action"},
+            {"name": "Barrel", "parent": "Barrel Assembly", "presence": "required", "movement_type": "static",
+             "parameters": {"barrel_length_in": 18.6, "caliber": "6.8x51mm TVCM"},
+             "description": "18.6 inch barrel with quick-release helical locking lugs. 6.8 TVCM polymer-cased ammo at 65,000 PSI",
+             "placement": "Place at the muzzle end of the barrel"},
+            {"name": "Gas Accelerator", "parent": "Barrel Assembly", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.02, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "description": "External poppet-valve gas accelerator — self-cleaning, no gas enters receiver. Simultaneously pushes op-rod rearward AND barrel assembly forward. This dual action is key to SRIA recoil averaging",
+             "placement": "Place at the gas port on the barrel"},
+            {"name": "Op Rod", "parent": "Barrel Assembly", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.14, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"stroke_m": 0.14, "stroke_calibers": "19-21"},
+             "description": "Operating rod — 140mm stroke. Op-rod cam presses lock block down to unlock bolt. At 3/4 lock block travel, releases firing pin hold cam",
+             "placement": "Place at the op-rod head, connected to gas accelerator"},
+            {"name": "Lock Block", "parent": "Barrel Assembly", "presence": "required", "movement_type": "translate", "axis": "Z",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": 0.0, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": -0.008, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "drivers": [{"driven_property": "location.z", "driver_bone": "Op Rod", "driver_property": "location.y",
+                          "expression": "max(var * 0.4, -0.008)",
+                          "description": "Lock block cams downward as op-rod moves rearward. Disengages from barrel extension hold-up cams"}],
+             "description": "Vertically-moving lock block with cam shaft. NOT a rotating bolt — tilting/dropping lock block system (patent US8794121B2). Op-rod cam presses it down to unlock",
+             "placement": "Place at the lock block between bolt and barrel extension"},
+            {"name": "Bolt", "parent": "Barrel Assembly", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.11, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"stroke_m": 0.11, "stroke_calibers": "15-17"},
+             "description": "Bolt translates 110mm rearward after lock block disengages. No rotation. Closed-bolt (semi) / open-bolt (auto) dual-mode firing",
+             "placement": "Place at the bolt face, on bore axis behind barrel extension"},
+            {"name": "Extractor", "parent": "Bolt", "presence": "optional", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0.0, "max_x": 0.087,
+                              "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "description": "Spring-loaded extractor claw on bolt face",
+             "placement": "Place at the extractor pivot on the bolt face"},
+            {"name": "Firing Pin", "parent": "Bolt", "presence": "optional", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": 0.0, "max_y": 0.004, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "description": "Released by op-rod cam — driven by op-rod momentum, not a hammer. Eliminates need for conventional sear/hammer and bullpup trigger linkage bar",
+             "placement": "Place at the firing pin tip, centered on bolt face bore axis"},
+            {"name": "Hydraulic Buffer", "parent": "Barrel Assembly", "presence": "expected", "movement_type": "scale", "axis": "Y",
+             "drivers": [{"driven_property": "scale.y", "driver_bone": "Barrel Assembly", "driver_property": "location.y",
+                          "expression": "1.0 - abs(var) / 0.014 * 0.2",
+                          "description": "Hydraulic buffer compresses as barrel assembly moves. Velocity-dependent damping"}],
+             "description": "Hydraulic buffer with centering spring and piston. Velocity-dependent resistance — higher speed = more resistance. Key to SRIA impulse averaging",
+             "placement": "Place at the buffer piston, between barrel extension and outer receiver"},
+            {"name": "Trigger", "parent": "Outer Receiver", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -0.262, "max_x": 0.0,
+                              "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "description": "No transfer bar needed — op-rod cam system handles firing pin release, giving cleaner trigger pull than typical bullpups",
+             "placement": "Place at the trigger pin in the pistol grip area"},
+            {"name": "Selector", "parent": "Outer Receiver", "presence": "expected", "movement_type": "rotate", "axis": "Z",
+             "constraints": [{"type": "LIMIT_ROTATION", "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"positions": [{"name": "safe", "angle_degrees": 0}, {"name": "semi", "angle_degrees": 90}, {"name": "auto", "angle_degrees": 180}],
+                            "dual_mode": "Closed bolt (semi) / Open bolt (auto)"},
+             "description": "Ambidextrous selector. Semi fires from closed bolt (accuracy). Auto fires from open bolt (prevents cook-off). AR-15 compatible grip",
+             "placement": "Place at the selector lever above the pistol grip"},
+            {"name": "Charging Handle", "parent": "Outer Receiver", "presence": "expected", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.11, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "description": "Non-reciprocating, switchable to either side. Does not move during firing",
+             "placement": "Place at the charging handle, above the barrel"},
+            {"name": "Magazine", "parent": None, "presence": "required", "movement_type": "translate", "axis": "Z",
+             "description": "Rear-mounted (bullpup). 20-round Lancer mag. 6.8 TVCM polymer-cased ammo — 30-40% lighter than brass",
+             "placement": "Place at the top of the magazine, where it seats behind the grip"},
+        ],
+        "physics": {"carrier_mass_kg": 0.25, "buffer_spring_rate_n_per_m": 4000, "gas_impulse_duration_ms": 1.0,
+                    "carrier_peak_velocity_m_per_s": 5.0, "bolt_carrier_mass_kg": 0.25,
+                    "sria_barrel_stroke_m": 0.0137, "sria_recoil_reduction": 0.75},
+        "part_name_aliases": {"Outer Receiver": ["*receiver*", "*housing*", "*frame*"], "Barrel Assembly": ["*barrel*assembly*", "*inner*"],
+                              "Gas Accelerator": ["*gas*", "*poppet*"], "Op Rod": ["*op*rod*", "*operating*rod*"],
+                              "Lock Block": ["*lock*block*", "*locking*"], "Bolt": ["*bolt*"],
+                              "Charging Handle": ["*charging*", "*ch*"], "Magazine": ["*mag*"]},
+    },
 }
 
 
@@ -950,8 +1136,64 @@ def add_single_bone(config, bone_name, armature_obj, position, context):
     info["constraints_added"] = _apply_bone_constraints(armature_obj, bone_def)
     info["drivers_added"] = _apply_bone_drivers(armature_obj, bone_def)
     _assign_bone_shape(armature_obj, bone_def)
+    _assign_bone_collection(armature_obj, bone_def)
+    _colorize_bone(armature_obj, bone_def)
+    _store_bone_metadata(armature_obj, bone_def)
 
     return info
+
+
+def _assign_bone_collection(armature_obj, bone_def):
+    """Assign bone to a named collection based on presence."""
+    arm = armature_obj.data
+    if not hasattr(arm, "collections"):
+        return  # Blender < 4.0
+    coll_name = "Required Bones" if bone_def.presence in ("required", "expected") else "Optional Bones"
+    bcoll = arm.collections.get(coll_name)
+    if bcoll is None:
+        bcoll = arm.collections.new(coll_name)
+    bone = arm.bones.get(bone_def.name)
+    if bone:
+        bcoll.assign(bone)
+
+
+def _colorize_bone(armature_obj, bone_def):
+    """Color-code bone by category using Blender 4.0+ palette."""
+    arm = armature_obj.data
+    bone = arm.bones.get(bone_def.name)
+    if bone is None or not hasattr(bone, "color"):
+        return
+    palette_map = {
+        "required": "THEME01",   # red
+        "expected": "THEME06",   # yellow
+        "optional": "THEME04",   # blue
+    }
+    bone.color.palette = palette_map.get(bone_def.presence, "DEFAULT")
+    arm.show_bone_colors = True
+
+
+def _store_bone_metadata(armature_obj, bone_def):
+    """Store description and placement as custom properties on the pose bone."""
+    pose_bone = armature_obj.pose.bones.get(bone_def.name)
+    if pose_bone is None:
+        return
+    if bone_def.description:
+        pose_bone["description"] = bone_def.description
+    if bone_def.placement:
+        pose_bone["placement"] = bone_def.placement
+    pose_bone["movement_type"] = bone_def.movement_type
+    pose_bone["presence"] = bone_def.presence
+    if bone_def.axis:
+        pose_bone["axis"] = bone_def.axis
+    if bone_def.parameters:
+        # Store simplified specs string
+        specs = []
+        for k, v in bone_def.parameters.items():
+            if k in ("source", "pivot_description") or isinstance(v, (list, dict)):
+                continue
+            specs.append(f"{k.replace('_', ' ').title()}: {v}")
+        if specs:
+            pose_bone["specs"] = " | ".join(specs)
 
 
 # ===================================================================
@@ -1772,10 +2014,259 @@ class WEAPONRIG_PT_cycle(bpy.types.Panel):
 
 
 # ===================================================================
+# BONE INFO PANEL (v0.5 — shows selected bone details)
+# ===================================================================
+
+class WEAPONRIG_PT_bone_info(bpy.types.Panel):
+    """Per-bone info panel — shows description, placement, specs when a bone is selected"""
+    bl_label = "Bone Info"
+    bl_idname = "WEAPONRIG_PT_bone_info"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "WeaponRig"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_pose_bone is not None
+
+    def draw(self, context):
+        layout = self.layout
+        pb = context.active_pose_bone
+        if pb is None:
+            return
+
+        box = layout.box()
+        box.label(text=pb.name, icon="BONE_DATA")
+
+        if "movement_type" in pb:
+            row = box.row()
+            row.label(text=f"Type: {pb['movement_type']}", icon="CON_LOCLIKE")
+            if "axis" in pb:
+                row.label(text=f"Axis: {pb['axis']}")
+
+        if "presence" in pb:
+            pres = pb["presence"]
+            icon = "LAYER_ACTIVE" if pres == "required" else ("LAYER_USED" if pres == "expected" else "RADIOBUT_OFF")
+            box.label(text=f"Presence: {pres}", icon=icon)
+
+        if "description" in pb:
+            box.separator()
+            box.label(text="Description:", icon="INFO")
+            _wrap_text(box, str(pb["description"]))
+
+        if "placement" in pb:
+            box.separator()
+            box.label(text="Placement:", icon="CURSOR")
+            _wrap_text(box, str(pb["placement"]))
+
+        if "specs" in pb:
+            box.separator()
+            box.label(text="Specs:", icon="PREFERENCES")
+            for spec in str(pb["specs"]).split(" | "):
+                box.label(text=f"  {spec}")
+
+        # Show constraints summary
+        if pb.constraints:
+            box.separator()
+            box.label(text=f"Constraints: {len(pb.constraints)}", icon="CONSTRAINT_BONE")
+            for con in pb.constraints:
+                box.label(text=f"  {con.type.replace('_', ' ').title()}")
+
+
+# ===================================================================
+# POSE LIBRARY PRESETS (v0.5)
+# ===================================================================
+
+class WEAPONRIG_OT_save_pose(bpy.types.Operator):
+    """Save current bone positions as a named pose"""
+    bl_idname = "weaponrig.save_pose"
+    bl_label = "Save Pose"
+    bl_options = {"REGISTER", "UNDO"}
+
+    pose_name: bpy.props.StringProperty(name="Pose Name", default="Custom Pose")
+
+    def execute(self, context):
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if arm_obj is None:
+            self.report({"WARNING"}, "No WeaponRig armature found")
+            return {"CANCELLED"}
+
+        if arm_obj.animation_data is None:
+            arm_obj.animation_data_create()
+
+        action = bpy.data.actions.new(name=self.pose_name)
+        for pb in arm_obj.pose.bones:
+            data_path_loc = f'pose.bones["{pb.name}"].location'
+            data_path_rot = f'pose.bones["{pb.name}"].rotation_euler'
+            data_path_scl = f'pose.bones["{pb.name}"].scale'
+            for i in range(3):
+                if pb.location[i] != 0.0:
+                    fc = action.fcurves.new(data_path=data_path_loc, index=i, action_group=pb.name)
+                    fc.keyframe_points.insert(0, pb.location[i])
+                if pb.rotation_euler[i] != 0.0:
+                    fc = action.fcurves.new(data_path=data_path_rot, index=i, action_group=pb.name)
+                    fc.keyframe_points.insert(0, pb.rotation_euler[i])
+                if pb.scale[i] != 1.0:
+                    fc = action.fcurves.new(data_path=data_path_scl, index=i, action_group=pb.name)
+                    fc.keyframe_points.insert(0, pb.scale[i])
+
+        if hasattr(action, "asset_mark"):
+            action.asset_mark()
+            if hasattr(action, "asset_data") and action.asset_data:
+                action.asset_data.description = f"WeaponRig pose: {self.pose_name}"
+
+        self.report({"INFO"}, f"Saved pose: {self.pose_name}")
+        return {"FINISHED"}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+
+class WEAPONRIG_OT_apply_pose(bpy.types.Operator):
+    """Apply a saved pose preset"""
+    bl_idname = "weaponrig.apply_pose"
+    bl_label = "Apply Pose"
+    bl_options = {"REGISTER", "UNDO"}
+
+    pose_name: bpy.props.StringProperty(name="Pose Name")
+
+    def execute(self, context):
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if arm_obj is None:
+            self.report({"WARNING"}, "No WeaponRig armature found")
+            return {"CANCELLED"}
+
+        action = bpy.data.actions.get(self.pose_name)
+        if action is None:
+            self.report({"ERROR"}, f"Pose '{self.pose_name}' not found")
+            return {"CANCELLED"}
+
+        for fc in action.fcurves:
+            try:
+                arm_obj.pose.bones[0]  # ensure pose bones exist
+                data_path = fc.data_path
+                idx = fc.array_index
+                if fc.keyframe_points:
+                    val = fc.keyframe_points[0].co[1]
+                    arm_obj.path_resolve(data_path)[idx] = val
+            except (IndexError, KeyError, ValueError):
+                continue
+
+        context.view_layer.update()
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+
+        self.report({"INFO"}, f"Applied pose: {self.pose_name}")
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_reset_pose(bpy.types.Operator):
+    """Reset all bones to rest position"""
+    bl_idname = "weaponrig.reset_pose"
+    bl_label = "Reset Pose"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if arm_obj is None:
+            return {"CANCELLED"}
+
+        for pb in arm_obj.pose.bones:
+            pb.location = (0, 0, 0)
+            pb.rotation_euler = (0, 0, 0)
+            pb.rotation_quaternion = (1, 0, 0, 0)
+            pb.scale = (1, 1, 1)
+
+        context.view_layer.update()
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+
+        self.report({"INFO"}, "All bones reset to rest position")
+        return {"FINISHED"}
+
+
+class WEAPONRIG_PT_poses(bpy.types.Panel):
+    """Pose library panel"""
+    bl_label = "Pose Library"
+    bl_idname = "WEAPONRIG_PT_poses"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "WeaponRig"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context):
+        return len(_get_added_list(context)) > 0
+
+    def draw(self, context):
+        layout = self.layout
+
+        # Save / Reset
+        row = layout.row(align=True)
+        row.operator("weaponrig.save_pose", text="Save Current Pose", icon="FILE_TICK")
+        row.operator("weaponrig.reset_pose", text="Reset", icon="LOOP_BACK")
+
+        # List saved poses
+        pose_actions = [a for a in bpy.data.actions if a.name.startswith(("Bolt ", "Mag", "Dust", "Safety", "Custom", "Fire_"))]
+        if pose_actions:
+            box = layout.box()
+            box.label(text="Saved Poses:", icon="ACTION")
+            for action in pose_actions:
+                row = box.row(align=True)
+                row.label(text=action.name)
+                op = row.operator("weaponrig.apply_pose", text="", icon="PLAY")
+                op.pose_name = action.name
+
+
+# ===================================================================
+# ADDON PREFERENCES (v0.5)
+# ===================================================================
+
+class WeaponRigPreferences(bpy.types.AddonPreferences):
+    bl_idname = __name__
+
+    show_placement_hints: bpy.props.BoolProperty(
+        name="Show Placement Hints", default=True,
+        description="Show bone placement guidance in the panel",
+    )
+    auto_colorize: bpy.props.BoolProperty(
+        name="Auto Color-Code Bones", default=True,
+        description="Color bones by category (required/optional) on creation",
+    )
+    default_engine: bpy.props.EnumProperty(
+        name="Default Export Engine",
+        items=[("UE5", "Unreal Engine 5", ""), ("Unity", "Unity", ""), ("Godot", "Godot", "")],
+        default="UE5",
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "show_placement_hints")
+        layout.prop(self, "auto_colorize")
+        layout.prop(self, "default_engine")
+
+
+# ===================================================================
 # REGISTRATION
 # ===================================================================
 
 _classes = (
+    WeaponRigPreferences,
     WeaponRigProperties,
     WEAPONRIG_OT_add_bone,
     WEAPONRIG_OT_select_bone,
@@ -1788,8 +2279,13 @@ _classes = (
     WEAPONRIG_OT_segment_mesh,
     WEAPONRIG_OT_export_fbx,
     WEAPONRIG_OT_play_cycle,
+    WEAPONRIG_OT_save_pose,
+    WEAPONRIG_OT_apply_pose,
+    WEAPONRIG_OT_reset_pose,
     WEAPONRIG_PT_main,
     WEAPONRIG_PT_cycle,
+    WEAPONRIG_PT_bone_info,
+    WEAPONRIG_PT_poses,
 )
 
 

@@ -1,0 +1,295 @@
+{
+  "schema_version": "1.0",
+  "operating_system": "g11_rotary_breech",
+  "display_name": "HK G11 Rotary Breech (Caseless)",
+  "description": "Rotary breech mechanism with Geneva drive and caseless ammunition. Most mechanically complex infantry weapon ever produced.",
+
+  "fire_modes": ["semi", "auto", "burst_3"],
+  "cyclic_rate_rpm": {
+    "semi": null,
+    "auto": 460,
+    "burst_3": 2100
+  },
+
+  "bones": [
+    {
+      "name": "Outer Shell",
+      "parent": null,
+      "presence": "required",
+      "movement_type": "static",
+      "description": "Outer polymer housing — what the shooter holds. All internal mechanisms float inside this shell on guide rails",
+      "placement": "Place at the center of the outer housing, near the pistol grip"
+    },
+    {
+      "name": "Floating Assembly",
+      "parent": "Outer Shell",
+      "presence": "required",
+      "movement_type": "translate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_LOCATION",
+          "min_x": 0.0, "max_x": 0.0, "use_min_x": true, "use_max_x": true,
+          "min_y": -0.045, "max_y": 0.0, "use_min_y": true, "use_max_y": true,
+          "min_z": 0.0, "max_z": 0.0, "use_min_z": true, "use_max_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "assembly_travel_m": 0.045,
+        "assembly_mass_kg": 1.8
+      },
+      "description": "Barrel + breech + feed mechanism slide backward inside outer shell on guide rails. In burst mode, fires 3 rounds before this assembly hits the rear buffer — shooter feels recoil only after the 3rd round",
+      "placement": "Place at the front of the internal mechanism, centered in the outer shell bore axis"
+    },
+    {
+      "name": "Barrel",
+      "parent": "Floating Assembly",
+      "presence": "required",
+      "movement_type": "static",
+      "description": "Fixed relative to the floating assembly. Moves with it during recoil but has no independent motion",
+      "placement": "Place at the chamber end of the barrel, centered on bore axis"
+    },
+    {
+      "name": "Breech Cylinder",
+      "parent": "Floating Assembly",
+      "presence": "required",
+      "movement_type": "rotate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_ROTATION",
+          "min_y": 0.0,
+          "max_y": 6.283,
+          "use_limit_x": true,
+          "use_limit_y": true,
+          "use_limit_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "mechanism_type": "geneva_drive",
+        "slot_count": 4,
+        "rotation_per_step_degrees": 90,
+        "motion_profile": "snap_dwell"
+      },
+      "description": "Rotating cylinder with a chamber bored through it. Rotates exactly 90 degrees per step via a 4-slot Geneva mechanism. Positions: feed (0), fire (90), extract (180), clear (270). The Geneva drive creates characteristic snap-dwell motion — rapid rotation then dead stop",
+      "placement": "Place at the center of the breech cylinder, on the rotation axis perpendicular to the barrel"
+    },
+    {
+      "name": "Chamber Insert",
+      "parent": "Breech Cylinder",
+      "presence": "optional",
+      "movement_type": "static",
+      "description": "Replaceable chamber piece inside the breech cylinder. Rotates with cylinder. Removable for maintenance animation",
+      "placement": "Place inside the breech cylinder bore, at the chamber position"
+    },
+    {
+      "name": "Gas Piston",
+      "parent": "Floating Assembly",
+      "presence": "required",
+      "movement_type": "translate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_LOCATION",
+          "min_x": 0.0, "max_x": 0.0, "use_min_x": true, "use_max_x": true,
+          "min_y": -0.04, "max_y": 0.0, "use_min_y": true, "use_max_y": true,
+          "min_z": 0.0, "max_z": 0.0, "use_min_z": true, "use_max_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "piston_stroke_m": 0.04,
+        "piston_mass_kg": 0.05
+      },
+      "description": "Gas piston driven rearward by propellant gas. Its linear stroke is converted to rotary motion of the breech cylinder through the gear train (connecting rod → spur gear → actuating gear)",
+      "placement": "Place at the gas piston head, above or beside the barrel"
+    },
+    {
+      "name": "Connecting Rod",
+      "parent": "Gas Piston",
+      "presence": "expected",
+      "movement_type": "rotate",
+      "axis": "X",
+      "constraints": [
+        {
+          "type": "LIMIT_ROTATION",
+          "min_x": -0.524,
+          "max_x": 0.524,
+          "use_limit_x": true,
+          "use_limit_y": true,
+          "use_limit_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "description": "Links gas piston linear motion to the spur gear. Pivots approximately 30 degrees each direction as piston reciprocates",
+      "placement": "Place at the pivot point connecting the gas piston to the spur gear"
+    },
+    {
+      "name": "Spur Gear",
+      "parent": "Floating Assembly",
+      "presence": "expected",
+      "movement_type": "rotate",
+      "axis": "X",
+      "drivers": [
+        {
+          "driven_property": "rotation_euler.x",
+          "driver_bone": "Gas Piston",
+          "driver_property": "location.y",
+          "expression": "var * -15.0",
+          "description": "Spur gear rotates as gas piston reciprocates. Gear ratio converts small piston stroke to larger angular displacement"
+        }
+      ],
+      "description": "Intermediate gear in the drive train. Converts connecting rod oscillation to continuous rotation. Meshes with the actuating gear",
+      "placement": "Place at the spur gear axle, between the connecting rod and the actuating gear"
+    },
+    {
+      "name": "Actuating Gear",
+      "parent": "Floating Assembly",
+      "presence": "expected",
+      "movement_type": "rotate",
+      "axis": "X",
+      "description": "Final gear that meshes with notches on the breech cylinder base. Drives the Geneva mechanism — its pin engages the cylinder's slots to produce 90-degree snap rotations",
+      "placement": "Place at the actuating gear axle, adjacent to the breech cylinder base"
+    },
+    {
+      "name": "Striker",
+      "parent": "Floating Assembly",
+      "presence": "required",
+      "movement_type": "translate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_LOCATION",
+          "min_x": 0.0, "max_x": 0.0, "use_min_x": true, "use_max_x": true,
+          "min_y": -0.008, "max_y": 0.0, "use_min_y": true, "use_max_y": true,
+          "min_z": 0.0, "max_z": 0.0, "use_min_z": true, "use_max_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "description": "Fires the caseless round when breech cylinder is aligned with barrel (90-degree position). Released by striker spring when cam allows",
+      "placement": "Place at the rear of the breech, on the bore axis behind the cylinder"
+    },
+    {
+      "name": "Cocking Handle",
+      "parent": "Outer Shell",
+      "presence": "expected",
+      "movement_type": "rotate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_ROTATION",
+          "min_y": -6.283,
+          "max_y": 0.0,
+          "use_limit_x": true,
+          "use_limit_y": true,
+          "use_limit_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "rotation_degrees": 360,
+        "direction": "counterclockwise"
+      },
+      "description": "Unique rotary cocking handle — rotates 360 degrees counterclockwise to charge the weapon. Unlike any other firearm's charging mechanism. Mounted on the outer shell (does not reciprocate)",
+      "placement": "Place at the cocking handle axle on the outer shell, typically on the left side"
+    },
+    {
+      "name": "Toothed Wheel",
+      "parent": "Cocking Handle",
+      "presence": "optional",
+      "movement_type": "rotate",
+      "axis": "Y",
+      "description": "Gear wheel driven by the cocking handle rotation. Transmits cocking force to the internal mechanism",
+      "placement": "Place on the same axle as the cocking handle, inside the housing"
+    },
+    {
+      "name": "Magazine Follower",
+      "parent": "Floating Assembly",
+      "presence": "optional",
+      "movement_type": "translate",
+      "axis": "Z",
+      "description": "Pushes caseless rounds from the top-mounted magazine down into the breech cylinder feed position. Magazine sits horizontally on top of the weapon",
+      "placement": "Place at the top of the magazine feed area, where rounds enter the cylinder"
+    },
+    {
+      "name": "Trigger",
+      "parent": "Outer Shell",
+      "presence": "required",
+      "movement_type": "rotate",
+      "axis": "X",
+      "constraints": [
+        {
+          "type": "LIMIT_ROTATION",
+          "min_x": -0.262,
+          "max_x": 0.0,
+          "use_limit_x": true,
+          "use_limit_y": true,
+          "use_limit_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "rotation_degrees": 15.0
+      },
+      "description": "Standard trigger pull releases sear mechanism. Connected to outer shell (not floating assembly) so trigger feel is consistent regardless of assembly position",
+      "placement": "Place at the trigger pin in the pistol grip area"
+    },
+    {
+      "name": "Selector",
+      "parent": "Outer Shell",
+      "presence": "expected",
+      "movement_type": "rotate",
+      "axis": "Z",
+      "constraints": [
+        {
+          "type": "LIMIT_ROTATION",
+          "use_limit_x": true,
+          "use_limit_y": true,
+          "use_limit_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "positions": [
+          {"name": "safe", "angle_degrees": 0},
+          {"name": "semi", "angle_degrees": 90},
+          {"name": "burst", "angle_degrees": 180},
+          {"name": "auto", "angle_degrees": 270}
+        ],
+        "detent_count": 4
+      },
+      "description": "4-position selector: Safe, Semi, 3-round Burst (2100 RPM), Full Auto (460 RPM). Burst mode is the G11's signature feature — three rounds fired before the shooter feels any recoil",
+      "placement": "Place at the selector lever on the left side of the housing"
+    }
+  ],
+
+  "physics": {
+    "burst_recoil_behavior": {
+      "description": "In burst mode, floating assembly travels backward firing 3 rounds before hitting buffer. User feels recoil only after 3rd round",
+      "rounds_before_buffer": 3,
+      "assembly_travel_per_burst_m": 0.045,
+      "buffer_hit_delay_from_first_round_ms": 4.3
+    },
+    "geneva_profile": {
+      "slot_count": 4,
+      "rotation_per_step_degrees": 90,
+      "snap_duration_fraction": 0.3,
+      "dwell_duration_fraction": 0.7
+    },
+    "gas_impulse_duration_ms": 0.8,
+    "source": "Patent US3997994, Armourers Bench reference photos, HK factory documentation"
+  },
+
+  "part_name_aliases": {
+    "Outer Shell": ["housing", "outer_housing", "shell", "body"],
+    "Floating Assembly": ["inner_assembly", "recoil_assembly", "action_assembly"],
+    "Breech Cylinder": ["breech", "cylinder", "rotary_breech", "rotating_chamber"],
+    "Gas Piston": ["piston", "gas_rod"],
+    "Striker": ["firing_pin", "striker_pin"],
+    "Cocking Handle": ["charging_handle", "cocking_lever"],
+    "Trigger": ["trigger_blade"],
+    "Selector": ["fire_selector", "mode_selector"]
+  }
+}

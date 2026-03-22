@@ -1,0 +1,321 @@
+{
+  "schema_version": "1.0",
+  "operating_system": "rm277_bullpup_sria",
+  "display_name": "RM277 Bullpup (SRIA)",
+  "description": "General Dynamics / True Velocity bullpup with Short Recoil Impulse Averaging. Gas and recoil operated, impulse averaged. 75% recoil reduction.",
+
+  "fire_modes": ["semi", "auto"],
+  "cyclic_rate_rpm": {
+    "semi": null,
+    "auto": 550
+  },
+
+  "bones": [
+    {
+      "name": "Outer Receiver",
+      "parent": null,
+      "presence": "required",
+      "movement_type": "static",
+      "description": "Outer receiver housing — the fixed frame the shooter holds. All internal mechanisms float inside this on guide rails. Stamped aluminum with Picatinny rail and M-LOK",
+      "placement": "Place at the pistol grip area, center of the outer receiver"
+    },
+    {
+      "name": "Barrel Assembly",
+      "parent": "Outer Receiver",
+      "presence": "required",
+      "movement_type": "translate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_LOCATION",
+          "min_x": 0.0, "max_x": 0.0, "use_min_x": true, "use_max_x": true,
+          "min_y": -0.014, "max_y": 0.014, "use_min_y": true, "use_max_y": true,
+          "min_z": 0.0, "max_z": 0.0, "use_min_z": true, "use_max_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "sria_stroke_m": 0.0137,
+        "barrel_length_mm": 472,
+        "recoil_reduction_percent": 75
+      },
+      "description": "Barrel, barrel extension, and inner receiver float as a unit inside the outer receiver. SRIA stroke is +/-13.7mm (2 calibers). The drive spring pre-loads this assembly with forward momentum before firing — when the round fires, the assembly is already moving forward, so net rearward impulse is dramatically reduced",
+      "placement": "Place at the barrel extension, where the barrel meets the action"
+    },
+    {
+      "name": "Barrel",
+      "parent": "Barrel Assembly",
+      "presence": "required",
+      "movement_type": "static",
+      "parameters": {
+        "barrel_length_in": 18.6,
+        "caliber": "6.8x51mm TVCM"
+      },
+      "description": "18.6 inch barrel with quick-release helical locking lugs. Fixed to barrel assembly — moves with it during SRIA cycle. Fluted for weight reduction",
+      "placement": "Place at the muzzle end of the barrel"
+    },
+    {
+      "name": "Gas Accelerator",
+      "parent": "Barrel Assembly",
+      "presence": "required",
+      "movement_type": "translate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_LOCATION",
+          "min_x": 0.0, "max_x": 0.0, "use_min_x": true, "use_max_x": true,
+          "min_y": -0.02, "max_y": 0.0, "use_min_y": true, "use_max_y": true,
+          "min_z": 0.0, "max_z": 0.0, "use_min_z": true, "use_max_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "poppet_type": "external",
+        "self_cleaning": true
+      },
+      "description": "External poppet-valve gas accelerator — completely outside the receiver (self-cleaning, no gas enters action). Gas from barrel port drives the poppet, which simultaneously pushes the op-rod rearward AND imparts forward momentum to the barrel assembly. This dual action is key to SRIA recoil averaging",
+      "placement": "Place at the gas port on the barrel, where the gas accelerator housing mounts"
+    },
+    {
+      "name": "Op Rod",
+      "parent": "Barrel Assembly",
+      "presence": "required",
+      "movement_type": "translate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_LOCATION",
+          "min_x": 0.0, "max_x": 0.0, "use_min_x": true, "use_max_x": true,
+          "min_y": -0.14, "max_y": 0.0, "use_min_y": true, "use_max_y": true,
+          "min_z": 0.0, "max_z": 0.0, "use_min_z": true, "use_max_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "stroke_m": 0.14,
+        "stroke_calibers": "19-21"
+      },
+      "description": "Operating rod driven rearward by gas accelerator poppet. 140mm (19-21 calibers) stroke. The op-rod cam presses the lock block downward to unlock the bolt. At approximately 3/4 of lock block travel, the op-rod cam releases the firing pin hold cam",
+      "placement": "Place at the op-rod head, connected to the gas accelerator poppet"
+    },
+    {
+      "name": "Lock Block",
+      "parent": "Barrel Assembly",
+      "presence": "required",
+      "movement_type": "translate",
+      "axis": "Z",
+      "constraints": [
+        {
+          "type": "LIMIT_LOCATION",
+          "min_x": 0.0, "max_x": 0.0, "use_min_x": true, "use_max_x": true,
+          "min_y": 0.0, "max_y": 0.0, "use_min_y": true, "use_max_y": true,
+          "min_z": -0.008, "max_z": 0.0, "use_min_z": true, "use_max_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "drivers": [
+        {
+          "driven_property": "location.z",
+          "driver_bone": "Op Rod",
+          "driver_property": "location.y",
+          "expression": "max(var * 0.4, -0.008)",
+          "description": "Lock block cams downward as op-rod moves rearward. Disengages from barrel extension hold-up cams to unlock bolt"
+        }
+      ],
+      "description": "Vertically-moving lock block with cam shaft. End portions engage hold-up cams on barrel extension. Op-rod cam presses it downward to unlock. NOT a rotating bolt — this is a tilting/dropping lock block system (per patent US8794121B2)",
+      "placement": "Place at the lock block between the bolt and barrel extension"
+    },
+    {
+      "name": "Bolt",
+      "parent": "Barrel Assembly",
+      "presence": "required",
+      "movement_type": "translate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_LOCATION",
+          "min_x": 0.0, "max_x": 0.0, "use_min_x": true, "use_max_x": true,
+          "min_y": -0.11, "max_y": 0.0, "use_min_y": true, "use_max_y": true,
+          "min_z": 0.0, "max_z": 0.0, "use_min_z": true, "use_max_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "stroke_m": 0.11,
+        "stroke_calibers": "15-17"
+      },
+      "description": "Bolt translates rearward 110mm (15-17 calibers) after lock block disengages. No rotation — the RM277 uses a lock block system, not a rotating bolt. In closed-bolt mode (semi), bolt is forward at rest. In open-bolt mode (auto), bolt is held rear",
+      "placement": "Place at the bolt face, on the bore axis behind the barrel extension"
+    },
+    {
+      "name": "Extractor",
+      "parent": "Bolt",
+      "presence": "optional",
+      "movement_type": "rotate",
+      "axis": "X",
+      "constraints": [
+        {
+          "type": "LIMIT_ROTATION",
+          "min_x": 0.0,
+          "max_x": 0.087,
+          "use_limit_x": true,
+          "use_limit_y": true,
+          "use_limit_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "description": "Spring-loaded extractor claw on bolt face. Grips cartridge rim for extraction. Pivots to snap over rim during chambering",
+      "placement": "Place at the extractor pivot on the bolt face"
+    },
+    {
+      "name": "Firing Pin",
+      "parent": "Bolt",
+      "presence": "optional",
+      "movement_type": "translate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_LOCATION",
+          "min_x": 0.0, "max_x": 0.0, "use_min_x": true, "use_max_x": true,
+          "min_y": 0.0, "max_y": 0.004, "use_min_y": true, "use_max_y": true,
+          "min_z": 0.0, "max_z": 0.0, "use_min_z": true, "use_max_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "description": "Firing pin held retracted by hold spring. Released by op-rod cam at approximately 3/4 of lock block travel — driven forward by op-rod momentum, not a traditional hammer. This eliminates the need for a conventional sear/hammer mechanism",
+      "placement": "Place at the firing pin tip, centered on the bolt face bore axis"
+    },
+    {
+      "name": "Hydraulic Buffer",
+      "parent": "Barrel Assembly",
+      "presence": "expected",
+      "movement_type": "scale",
+      "axis": "Y",
+      "drivers": [
+        {
+          "driven_property": "scale.y",
+          "driver_bone": "Barrel Assembly",
+          "driver_property": "location.y",
+          "expression": "1.0 - abs(var) / 0.014 * 0.2",
+          "description": "Hydraulic buffer compresses as barrel assembly moves. Velocity-dependent damping — resistance increases with speed"
+        }
+      ],
+      "parameters": {
+        "damping_type": "velocity_dependent_hydraulic",
+        "centering_spring": true
+      },
+      "description": "Hydraulic buffer assembly with centering spring and piston. Couples barrel extension to outer receiver. Fluid conduits create velocity-dependent resistance — higher velocity equals more resistance. Combined with the drive spring and gas accelerator, this creates the SRIA impulse averaging effect",
+      "placement": "Place at the buffer piston, between the barrel extension and outer receiver rear"
+    },
+    {
+      "name": "Trigger",
+      "parent": "Outer Receiver",
+      "presence": "required",
+      "movement_type": "rotate",
+      "axis": "X",
+      "constraints": [
+        {
+          "type": "LIMIT_ROTATION",
+          "min_x": -0.262,
+          "max_x": 0.0,
+          "use_limit_x": true,
+          "use_limit_y": true,
+          "use_limit_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "rotation_degrees": 15.0,
+        "linkage": "No transfer bar needed — firing pin released by op-rod cam system"
+      },
+      "description": "Trigger mounted on outer receiver near pistol grip. GD claimed they eliminated the traditional bullpup transfer bar — the op-rod cam system handles firing pin release, giving a cleaner trigger pull than typical bullpups",
+      "placement": "Place at the trigger pin in the pistol grip area"
+    },
+    {
+      "name": "Selector",
+      "parent": "Outer Receiver",
+      "presence": "expected",
+      "movement_type": "rotate",
+      "axis": "Z",
+      "constraints": [
+        {
+          "type": "LIMIT_ROTATION",
+          "use_limit_x": true,
+          "use_limit_y": true,
+          "use_limit_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "positions": [
+          {"name": "safe", "angle_degrees": 0},
+          {"name": "semi", "angle_degrees": 90},
+          {"name": "auto", "angle_degrees": 180}
+        ],
+        "ambidextrous": true,
+        "dual_mode": "Closed bolt (semi) / Open bolt (auto)"
+      },
+      "description": "Ambidextrous safety/selector. Semi fires from closed bolt (accuracy). Auto fires from open bolt (prevents cook-off, allows chamber cooling). AR-15 compatible pistol grip with M16-style selector positions",
+      "placement": "Place at the selector lever above the pistol grip, both sides"
+    },
+    {
+      "name": "Charging Handle",
+      "parent": "Outer Receiver",
+      "presence": "expected",
+      "movement_type": "translate",
+      "axis": "Y",
+      "constraints": [
+        {
+          "type": "LIMIT_LOCATION",
+          "min_x": 0.0, "max_x": 0.0, "use_min_x": true, "use_max_x": true,
+          "min_y": -0.11, "max_y": 0.0, "use_min_y": true, "use_max_y": true,
+          "min_z": 0.0, "max_z": 0.0, "use_min_z": true, "use_max_z": true,
+          "owner_space": "LOCAL"
+        }
+      ],
+      "parameters": {
+        "non_reciprocating": true,
+        "switchable_side": true
+      },
+      "description": "Non-reciprocating charging handle above the barrel. Switchable to either side for ambidextrous operation. Does not move during firing — only used to manually charge the weapon",
+      "placement": "Place at the charging handle, above the barrel on the handguard"
+    },
+    {
+      "name": "Magazine",
+      "parent": null,
+      "presence": "required",
+      "movement_type": "translate",
+      "axis": "Z",
+      "description": "Rear-mounted magazine (bullpup configuration, behind the grip). 20-round proprietary Lancer magazine. Detaches downward for reload. Uses 6.8 TVCM polymer-cased ammunition (65,000 PSI, 30-40% lighter than brass)",
+      "placement": "Place at the top of the magazine, where it seats into the magazine well behind the grip"
+    }
+  ],
+
+  "physics": {
+    "sria_system": {
+      "description": "Short Recoil Impulse Averaging — three-phase recoil mitigation",
+      "phase_1": "Drive spring provides forward momentum equal to 1/3 to 1/2 of firing impulse",
+      "phase_2": "Gas accelerator pushes barrel forward while driving op-rod rearward",
+      "phase_3": "Hydraulic buffer with velocity-dependent damping absorbs remaining energy",
+      "recoil_reduction_shoulder": 0.75,
+      "recoil_reduction_hard_mount": 0.95
+    },
+    "barrel_assembly_mass_kg": 1.5,
+    "op_rod_mass_kg": 0.15,
+    "bolt_mass_kg": 0.25,
+    "drive_spring_preload_n": 45,
+    "hydraulic_damping_coefficient": 850,
+    "source": "Patents US8794121B2, US8919238B2, True Velocity published specs"
+  },
+
+  "part_name_aliases": {
+    "Outer Receiver": ["receiver", "housing", "outer_housing", "frame"],
+    "Barrel Assembly": ["inner_assembly", "floating_barrel", "recoil_assembly"],
+    "Gas Accelerator": ["gas_system", "poppet_valve", "gas_block"],
+    "Op Rod": ["operating_rod", "op_rod", "piston_rod"],
+    "Lock Block": ["locking_block", "lock_piece", "cam_block"],
+    "Bolt": ["bolt_face", "bolt_head"],
+    "Charging Handle": ["ch", "cocking_handle"],
+    "Magazine": ["mag", "magazine_body"]
+  }
+}
