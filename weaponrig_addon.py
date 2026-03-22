@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 8, 0),
+    "version": (0, 9, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -1073,31 +1073,61 @@ AXIS_VECTORS = {
 DEFAULT_TAIL = Vector((0, 0.05, 0))
 
 
+# ===================================================================
+# SIGN CONVENTION: All motion is POSITIVE in bone LOCAL Y.
+# Configs store unsigned magnitudes. The builder handles direction.
+# If you see a negative constraint value or driver coefficient, it's a bug.
+# ===================================================================
+
+# Lookup table: bone name → world direction of POSITIVE travel/rotation.
+# For translate bones: direction the part moves when activated.
+# For rotate bones: rotation axis (right-hand rule, positive = activation direction).
+TRAVEL_DIRECTION = {
+    "Bolt Carrier": Vector((0, 1, 0)), "Charging Handle": Vector((0, 1, 0)),
+    "Slide": Vector((0, 1, 0)), "Gas Piston": Vector((0, 1, 0)),
+    "Magazine": Vector((0, 0, -1)), "Magazine Release": Vector((1, 0, 0)),
+    "Forward Assist": Vector((0, -1, 0)), "Buffer Spring": Vector((0, 1, 0)),
+    "Trigger": Vector((1, 0, 0)), "Hammer": Vector((1, 0, 0)),
+    "Bolt": Vector((0, 1, 0)), "Selector": Vector((0, 0, 1)),
+    "Dust Cover": Vector((1, 0, 0)), "Bolt Catch": Vector((1, 0, 0)),
+    "Breech Cylinder": Vector((0, 1, 0)), "Cocking Handle": Vector((0, 1, 0)),
+    "Barrel": Vector((0, -1, 0)), "Op Rod": Vector((0, 1, 0)),
+    "Lock Block": Vector((0, 0, -1)), "Gas Accelerator": Vector((0, 1, 0)),
+    "Barrel Assembly": Vector((0, 1, 0)), "Floating Assembly": Vector((0, 1, 0)),
+    "Striker": Vector((0, 1, 0)), "Firing Pin": Vector((0, 1, 0)),
+    "Extractor": Vector((1, 0, 0)), "Cam Pin": Vector((0, 1, 0)),
+    "Weapon Root": Vector((0, 1, 0)), "Upper Receiver": Vector((0, 1, 0)),
+    "Frame": Vector((0, 1, 0)), "Outer Shell": Vector((0, 1, 0)),
+    "Outer Receiver": Vector((0, 1, 0)), "Recoil Spring": Vector((0, 1, 0)),
+    "Hydraulic Buffer": Vector((0, 1, 0)), "Connecting Rod": Vector((1, 0, 0)),
+    "Spur Gear": Vector((1, 0, 0)), "Actuating Gear": Vector((1, 0, 0)),
+    "Toothed Wheel": Vector((0, 1, 0)), "Magazine Follower": Vector((0, 0, -1)),
+    "Chamber Insert": Vector((0, 1, 0)), "Disconnector": Vector((1, 0, 0)),
+}
+
+
 def _orient_bone(eb, bone_def):
-    """Orient bone based on its movement type so LOCAL-space constraints work correctly.
+    """Orient bone so LOCAL Y points in the POSITIVE travel direction.
 
-    - translate: Y-axis along travel direction, Z-up
-    - rotate/scale: Y-axis along rotation axis, Z-up
-    - static: default Y-up, Z toward world Z
+    THIS is the function that determines the sign convention for the entire rig.
+    Every constraint value, every driver expression, every cam curve keyframe
+    depends on this orientation being correct.
     """
-    _axis_map = {
-        "X": Vector((1, 0, 0)), "Y": Vector((0, 1, 0)), "Z": Vector((0, 0, 1)),
-        "-X": Vector((-1, 0, 0)), "-Y": Vector((0, -1, 0)), "-Z": Vector((0, 0, -1)),
-    }
-    axis_vec = _axis_map.get(bone_def.axis, Vector((0, 1, 0)))
-    length = 0.05
+    direction = TRAVEL_DIRECTION.get(bone_def.name)
+    if direction is None:
+        _axis_map = {
+            "X": Vector((1, 0, 0)), "Y": Vector((0, 1, 0)), "Z": Vector((0, 0, 1)),
+            "-X": Vector((-1, 0, 0)), "-Y": Vector((0, -1, 0)), "-Z": Vector((0, 0, -1)),
+        }
+        direction = _axis_map.get(bone_def.axis, Vector((0, 1, 0)))
 
-    if bone_def.movement_type == "translate":
-        eb.tail = eb.head + axis_vec.normalized() * length
-    elif bone_def.movement_type in ("rotate", "scale"):
-        eb.tail = eb.head + axis_vec.normalized() * length
-    else:
-        eb.tail = eb.head + Vector((0, 0.05, 0))
+    if bone_def.movement_type == "static":
+        direction = Vector((0, 1, 0))
 
-    # Set roll so Z-axis points up (or closest to up given the bone direction)
+    eb.tail = eb.head + direction.normalized() * 0.05
+
     up = Vector((0, 0, 1))
-    bone_y = (eb.tail - eb.head).normalized()
-    if abs(bone_y.dot(up)) > 0.99:
+    if abs((eb.tail - eb.head).normalized().dot(up)) > 0.99:
         up = Vector((0, 1, 0))
     eb.align_roll(up)
 
@@ -1193,6 +1223,8 @@ def add_single_bone(config, bone_name, armature_obj, position, context):
 # ===================================================================
 
 def _apply_bone_constraints(arm_obj, bone_def, context=None):
+    """Add constraints using POSITIVE ranges derived from bone parameters.
+    All motion is 0 → +magnitude in LOCAL Y. Other axes locked at 0."""
     if not bone_def.constraints:
         return 0
     convention = context.scene.get("weaponrig_naming", "TITLE") if context else "TITLE"
@@ -1204,59 +1236,51 @@ def _apply_bone_constraints(arm_obj, bone_def, context=None):
     for cdef in bone_def.constraints:
         con = pose_bone.constraints.new(type=cdef.type)
 
-        if cdef.type == "LIMIT_ROTATION":
-            con.owner_space = cdef.owner_space
-            con.use_limit_x = cdef.use_limit_x
-            con.use_limit_y = cdef.use_limit_y
-            con.use_limit_z = cdef.use_limit_z
-            if cdef.use_limit_x:
-                con.min_x = min(cdef.min_x, cdef.max_x)
-                con.max_x = max(cdef.min_x, cdef.max_x)
-            if cdef.use_limit_y:
-                con.min_y = min(cdef.min_y, cdef.max_y)
-                con.max_y = max(cdef.min_y, cdef.max_y)
-            if cdef.use_limit_z:
-                con.min_z = min(cdef.min_z, cdef.max_z)
-                con.max_z = max(cdef.min_z, cdef.max_z)
+        if cdef.type == "LIMIT_LOCATION":
+            # Get travel distance from parameters (unsigned magnitude)
+            travel = abs(bone_def.parameters.get("carrier_travel_m",
+                     bone_def.parameters.get("assembly_travel_m",
+                     bone_def.parameters.get("sria_stroke_m",
+                     bone_def.parameters.get("piston_stroke_m",
+                     bone_def.parameters.get("stroke_m", 0.1))))))
+            # All travel along LOCAL Y: 0 → +travel. Lock X and Z.
+            con.use_min_x = True; con.min_x = 0.0; con.max_x = 0.0; con.use_max_x = True
+            con.use_min_y = True; con.min_y = 0.0
+            con.use_max_y = True; con.max_y = travel
+            con.use_min_z = True; con.min_z = 0.0; con.max_z = 0.0; con.use_max_z = True
+            con.owner_space = "LOCAL"
 
-        elif cdef.type == "LIMIT_LOCATION":
-            con.owner_space = cdef.owner_space
-            con.use_min_x = cdef.use_min_x
-            con.use_max_x = cdef.use_max_x
-            con.use_min_y = cdef.use_min_y
-            con.use_max_y = cdef.use_max_y
-            con.use_min_z = cdef.use_min_z
-            con.use_max_z = cdef.use_max_z
-            con.min_x = min(cdef.min_x, cdef.max_x)
-            con.max_x = max(cdef.min_x, cdef.max_x)
-            con.min_y = min(cdef.min_y, cdef.max_y)
-            con.max_y = max(cdef.min_y, cdef.max_y)
-            con.min_z = min(cdef.min_z, cdef.max_z)
-            con.max_z = max(cdef.min_z, cdef.max_z)
+        elif cdef.type == "LIMIT_ROTATION":
+            # Get rotation from parameters (unsigned magnitude)
+            rot_deg = abs(bone_def.parameters.get("rotation_degrees",
+                      bone_def.parameters.get("rotation_per_step_degrees", 15.0)))
+            rot_rad = math.radians(rot_deg)
+            # For multi-position selectors
+            if "positions" in bone_def.parameters:
+                positions = bone_def.parameters["positions"]
+                max_angle = max(p.get("angle_degrees", 0) for p in positions)
+                rot_rad = math.radians(max_angle)
+            # All rotation around LOCAL Y: 0 → +rotation. Lock X and Z.
+            con.use_limit_x = True; con.min_x = 0.0; con.max_x = 0.0
+            con.use_limit_y = True; con.min_y = 0.0; con.max_y = rot_rad
+            con.use_limit_z = True; con.min_z = 0.0; con.max_z = 0.0
+            con.owner_space = "LOCAL"
 
         elif cdef.type == "COPY_ROTATION":
             con.target = arm_obj
             if cdef.subtarget:
                 con.subtarget = cdef.subtarget
-            con.use_x = cdef.use_x
-            con.use_y = cdef.use_y
-            con.use_z = cdef.use_z
-            con.mix_mode = cdef.mix_mode
-            con.target_space = cdef.target_space
             con.owner_space = cdef.owner_space
 
         elif cdef.type == "TRACK_TO":
             con.target = arm_obj
             if cdef.subtarget:
                 con.subtarget = cdef.subtarget
-            con.track_axis = cdef.track_axis
-            con.up_axis = cdef.up_axis
 
         elif cdef.type == "STRETCH_TO":
             con.target = arm_obj
             if cdef.subtarget:
                 con.subtarget = cdef.subtarget
-            con.rest_length = cdef.rest_length
 
         con.influence = cdef.influence
         count += 1
@@ -1281,6 +1305,8 @@ def _parse_prop(prop):
 
 
 def _apply_bone_drivers(arm_obj, bone_def, context=None):
+    """Add drivers using POSITIVE values. All motion is LOCAL Y.
+    FModifier Generator removed before inserting cam curve keyframes."""
     if not bone_def.drivers:
         return 0
     convention = context.scene.get("weaponrig_naming", "TITLE") if context else "TITLE"
@@ -1290,15 +1316,20 @@ def _apply_bone_drivers(arm_obj, bone_def, context=None):
         return 0
     count = 0
     for ddef in bone_def.drivers:
-        # Check driver bone exists before creating driver
         driver_display = _format_bone_name(ddef.driver_bone, convention)
         if driver_display not in arm_obj.pose.bones:
-            continue  # Skip driver if target bone missing
+            continue
 
-        data_path, axis_idx = _parse_prop(ddef.driven_property)
-        fcurve = pose_bone.driver_add(data_path, axis_idx)
+        # All driven properties use LOCAL Y (index 1) because orient_bone
+        # aligned LOCAL Y to the movement axis
+        prop_base = ddef.driven_property.split(".")[0]
+        fcurve = pose_bone.driver_add(prop_base, 1)
         driver = fcurve.driver
         driver.type = "SCRIPTED"
+
+        # CRITICAL: Remove auto-generated Generator FModifier
+        while len(fcurve.modifiers) > 0:
+            fcurve.modifiers.remove(fcurve.modifiers[0])
 
         var = driver.variables.new()
         var.name = "var"
@@ -1306,33 +1337,38 @@ def _apply_bone_drivers(arm_obj, bone_def, context=None):
         tgt = var.targets[0]
         tgt.id = arm_obj
         tgt.bone_target = driver_display
-        tgt.transform_type = _PROPERTY_TO_TRANSFORM[ddef.driver_property]
+        # Source bone: always read LOCAL Y (our convention)
+        source_bone_def = None
+        weapon_type = context.scene.weaponrig_weapon_type if context else ""
+        if weapon_type and weapon_type in WEAPON_CONFIGS:
+            src_config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
+            source_bone_def = src_config.get_bone(ddef.driver_bone)
+        if source_bone_def and source_bone_def.movement_type in ("rotate", "scale"):
+            tgt.transform_type = "ROT_Y"
+        else:
+            tgt.transform_type = "LOC_Y"
         tgt.transform_space = "LOCAL_SPACE"
 
         if ddef.cam_curve_keyframes:
             driver.expression = "var"
-            travel = bone_def.parameters.get("carrier_travel_m", bone_def.parameters.get("assembly_travel_m", bone_def.parameters.get("piston_stroke_m", 1.0)))
-            rot_deg = bone_def.parameters.get("rotation_degrees", bone_def.parameters.get("rotation_per_step_degrees", 1.0))
+            travel = abs(bone_def.parameters.get("carrier_travel_m",
+                     bone_def.parameters.get("assembly_travel_m",
+                     bone_def.parameters.get("piston_stroke_m", 1.0))))
+            rot_deg = abs(bone_def.parameters.get("rotation_degrees",
+                      bone_def.parameters.get("rotation_per_step_degrees", 1.0)))
             rot_rad = math.radians(rot_deg)
 
-            # Remove auto-generated Generator FModifier (blocks keyframes)
-            for mod in list(fcurve.modifiers):
-                fcurve.modifiers.remove(mod)
-
-            # Remove existing keyframes
             while fcurve.keyframe_points:
                 fcurve.keyframe_points.remove(fcurve.keyframe_points[0])
 
             sorted_kfs = sorted(ddef.cam_curve_keyframes, key=lambda k: k.carrier_travel_pct)
             for i, kf in enumerate(sorted_kfs):
-                x_val = -(kf.carrier_travel_pct * travel)  # negative = rearward
-                y_val = -(kf.bolt_rotation_pct * rot_rad)
+                x_val = kf.carrier_travel_pct * travel   # POSITIVE
+                y_val = kf.bolt_rotation_pct * rot_rad   # POSITIVE
                 pt = fcurve.keyframe_points.insert(x_val, y_val, options={"FAST"})
                 pt.interpolation = "BEZIER"
-                # Auto-clamped handles prevent overshoot at dwell transitions
                 pt.handle_left_type = "AUTO_CLAMPED"
                 pt.handle_right_type = "AUTO_CLAMPED"
-                # Detect dwell zones and use VECTOR handles (flat)
                 if i > 0 and abs(sorted_kfs[i-1].bolt_rotation_pct - kf.bolt_rotation_pct) < 0.001:
                     pt.handle_left_type = "VECTOR"
                 if i < len(sorted_kfs) - 1 and abs(sorted_kfs[i+1].bolt_rotation_pct - kf.bolt_rotation_pct) < 0.001:
@@ -1341,7 +1377,12 @@ def _apply_bone_drivers(arm_obj, bone_def, context=None):
             fcurve.keyframe_points.sort()
             fcurve.update()
         else:
-            driver.expression = ddef.expression or "var"
+            # Strip negatives from legacy expressions
+            expr = ddef.expression or "var"
+            expr = expr.replace("var * -", "var * ").replace("var *-", "var * ")
+            if expr.startswith("-var"):
+                expr = expr[1:]
+            driver.expression = expr
 
         count += 1
     return count
