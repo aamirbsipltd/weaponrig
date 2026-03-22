@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 11, 0),
+    "version": (0, 12, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -2495,6 +2495,19 @@ _SPATIAL_RULES = {
     "slide": {"z_above": True, "dominant_axis": "Y"},
 }
 
+# BUG 3.2: Bullpup weapons have reversed trigger/magazine positions
+_SPATIAL_RULES_BULLPUP = {
+    "barrel": {"dominant_axis": "Y", "aspect_min": 5.0},
+    "magazine": {"y_behind": True, "z_below": True},  # Behind grip in bullpup
+    "trigger": {"z_below": True, "y_front": True, "volume": "small"},  # FORWARD in bullpup
+    "stock": {"y_behind": True},
+    "grip": {"z_below": True, "y_front": True},  # Forward in bullpup
+    "muzzle_device": {"y_front": True, "volume": "small"},
+    "charging_handle": {"volume": "small"},
+    "selector": {"volume": "tiny"},
+    "slide": {"z_above": True, "dominant_axis": "Y"},
+}
+
 
 def _spatial_match_parts(config, mesh_objects):
     """Match mesh objects to bones using spatial heuristics. Returns {bone_name: obj}."""
@@ -2525,9 +2538,18 @@ def _spatial_match_parts(config, mesh_objects):
     matches = {}
     used = set()
 
+    # BUG 3.2: Select rule set based on weapon layout
+    layout = config.part_name_aliases.get("_layout", "conventional") if hasattr(config, "part_name_aliases") else "conventional"
+    # Check operating system name for bullpup indicators
+    os_name = config.operating_system if hasattr(config, "operating_system") else ""
+    if "bullpup" in os_name.lower() or layout == "bullpup":
+        spatial_rules = _SPATIAL_RULES_BULLPUP
+    else:
+        spatial_rules = _SPATIAL_RULES
+
     for bone_def in config.bones:
         bone_lower = bone_def.name.lower().replace(" ", "_")
-        rules = _SPATIAL_RULES.get(bone_lower)
+        rules = spatial_rules.get(bone_lower)
         if not rules:
             continue
 
@@ -2815,11 +2837,13 @@ def _simulate_carrier_cycle(params, fps=60):
         if x < 0:
             f_total -= spring_k * x  # x is negative, so this pushes forward (positive)
 
-        # Buffer stop
+        # Buffer stop (BUG 2.5: proper momentum transfer + stability clamp)
         if x <= -travel:
             x = -travel
             if v < 0:
-                v = -v * restitution  # bounce
+                v = abs(v) * restitution  # always positive after bounce
+                if v < 0.05:  # below 5cm/s threshold, just stop
+                    v = 0.0
                 phase = "return"
 
         # Forward stop (battery)
@@ -2827,6 +2851,11 @@ def _simulate_carrier_cycle(params, fps=60):
             x = 0.0
             v = 0.0
             phase = "lockup"
+
+        # BUG 2.5: Stability guard — catch any remaining oscillation
+        if abs(x) > travel * 1.5:
+            x = max(min(x, 0.0), -travel)
+            v *= 0.3
 
         if phase != "lockup":
             a = f_total / mass
@@ -3301,15 +3330,28 @@ class WEAPONRIG_OT_generate_fire_modes(bpy.types.Operator):
 
 
 class WEAPONRIG_OT_segment_mesh(bpy.types.Operator):
-    """Separate fused mesh into parts using edge angle detection"""
+    """Separate fused mesh into parts (BUG 5.6: multiple fallback methods)"""
     bl_idname = "weaponrig.segment_mesh"
     bl_label = "Segment Mesh"
     bl_options = {"REGISTER", "UNDO"}
 
+    method: bpy.props.EnumProperty(
+        name="Method",
+        items=[
+            ("AUTO", "Auto (Loose → Material → Angle)", "Try each method in order"),
+            ("LOOSE", "Loose Parts", "Split disconnected geometry islands"),
+            ("MATERIAL", "By Material", "Split by material assignment"),
+            ("ANGLE", "By Edge Angle", "Split at sharp edges"),
+        ],
+        default="AUTO",
+    )
     angle_threshold: bpy.props.FloatProperty(
         name="Angle Threshold", default=45.0, min=10.0, max=90.0,
         description="Split at edges sharper than this angle (degrees)",
     )
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context):
         obj = context.active_object
@@ -3317,10 +3359,19 @@ class WEAPONRIG_OT_segment_mesh(bpy.types.Operator):
             self.report({"ERROR"}, "Select a mesh object")
             return {"CANCELLED"}
 
-        # First check for loose parts
-        islands = _separate_loose_parts(obj)
-        if len(islands) > 1:
-            # Use Blender's built-in separate by loose parts
+        method = self.method
+
+        # AUTO: try loose → material → angle in order
+        if method == "AUTO":
+            islands = _separate_loose_parts(obj)
+            if len(islands) > 1:
+                method = "LOOSE"
+            elif len(obj.data.materials) > 1:
+                method = "MATERIAL"
+            else:
+                method = "ANGLE"
+
+        if method == "LOOSE":
             context.view_layer.objects.active = obj
             obj.select_set(True)
             bpy.ops.object.mode_set(mode="EDIT")
@@ -3331,7 +3382,18 @@ class WEAPONRIG_OT_segment_mesh(bpy.types.Operator):
             self.report({"INFO"}, f"Separated into {new_count} loose parts")
             return {"FINISHED"}
 
-        # If single mesh, try dihedral angle segmentation
+        if method == "MATERIAL":
+            context.view_layer.objects.active = obj
+            obj.select_set(True)
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.select_all(action="SELECT")
+            bpy.ops.mesh.separate(type="MATERIAL")
+            bpy.ops.object.mode_set(mode="OBJECT")
+            new_count = len([o for o in context.selected_objects if o.type == "MESH"])
+            self.report({"INFO"}, f"Separated into {new_count} parts by material")
+            return {"FINISHED"}
+
+        # ANGLE method: dihedral angle segmentation
         regions = _segment_by_dihedral(obj, self.angle_threshold)
         if len(regions) <= 1:
             self.report({"WARNING"}, "Could not segment — mesh appears to be one continuous surface. Try lowering the angle threshold")
@@ -3533,7 +3595,7 @@ class WEAPONRIG_OT_test_rig(bpy.types.Operator):
             if not bone_def.drivers:
                 continue
             display_name = _format_bone_name(bone_def.name, convention)
-            for ddef in bone_def.drivers:
+            for _ddef in bone_def.drivers:
                 expected_path = f'pose.bones["{display_name}"]'
                 found = any(expected_path in dp for dp in driver_paths)
                 if not found:
