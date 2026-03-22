@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 18, 0),
+    "version": (0, 19, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -1783,9 +1783,34 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
         if context.object and context.object.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
 
+        # PRE-BUILD AUDIT: Auto-fix common mesh issues before building
+        matched_meshes = list(mesh_matches.values())
+        bone_names_set = {_format_bone_name(b.name, convention) for b in config.bones}
+        for mesh_obj in matched_meshes:
+            # P.1: Apply unapplied transforms
+            s = mesh_obj.scale
+            if abs(s.x - 1.0) > 0.001 or abs(s.y - 1.0) > 0.001 or abs(s.z - 1.0) > 0.001:
+                bpy.ops.object.select_all(action="DESELECT")
+                mesh_obj.select_set(True)
+                context.view_layer.objects.active = mesh_obj
+                bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+                build_warnings.append(f"Applied transforms on {mesh_obj.name}")
+
+            # P.4: Remove stray vertex groups that don't match bone names
+            stray = [vg.name for vg in mesh_obj.vertex_groups if vg.name not in bone_names_set]
+            for vg_name in stray:
+                vg = mesh_obj.vertex_groups.get(vg_name)
+                if vg:
+                    mesh_obj.vertex_groups.remove(vg)
+
+            # P.5: Remove shape keys (prevent separation/binding issues)
+            if mesh_obj.data.shape_keys:
+                mesh_obj.shape_key_clear()
+                build_warnings.append(f"Removed shape keys from {mesh_obj.name}")
+
         # T11: Set mesh origins to geometry center so bone position matches
         # deformation pivot (without this, mesh orbits around wrong point)
-        for mesh_obj in mesh_matches.values():
+        for mesh_obj in matched_meshes:
             bpy.ops.object.select_all(action="DESELECT")
             mesh_obj.select_set(True)
             context.view_layer.objects.active = mesh_obj
@@ -1877,13 +1902,30 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
                 added_list.append(bone_def.name)
         context.scene.weaponrig_added_bones = json.dumps(added_list)
 
+        # POST-BUILD VERIFICATION
+        for bone in arm_obj.data.bones:
+            if not bone.use_deform and bone.name in bone_names_set:
+                build_warnings.append(f"Bone '{bone.name}' has use_deform=False")
+        for mesh_obj in matched_meshes:
+            for mod in mesh_obj.modifiers:
+                if mod.type == "ARMATURE":
+                    if mod.use_bone_envelopes:
+                        build_warnings.append(f"{mesh_obj.name}: Bone Envelopes enabled")
+                    if not mod.use_vertex_groups:
+                        build_warnings.append(f"{mesh_obj.name}: Vertex Groups disabled on modifier")
+            if not any(m.type == "ARMATURE" for m in mesh_obj.modifiers):
+                build_warnings.append(f"{mesh_obj.name}: No Armature modifier")
+        for pb in arm_obj.pose.bones:
+            if pb.rotation_mode not in ("XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"):
+                build_warnings.append(f"Bone '{pb.name}' uses {pb.rotation_mode} — switch to Euler")
+
         # Report results (H.3: show warnings to rigger, not just console)
         matched_count = len(mesh_matches)
         if build_warnings:
             for w in build_warnings:
                 self.report({"WARNING"}, w)
             self.report({"WARNING"}, f"Built with {len(build_warnings)} warnings")
-        self.report({"INFO"}, f"Added {created} bones, positioned {matched_count} on mesh, bound {bound} parts")
+        self.report({"INFO"}, f"Added {created} bones, matched {matched_count}, bound {bound} parts")
         return {"FINISHED"}
 
 
@@ -1925,6 +1967,8 @@ def _bind_mesh_to_bone(mesh_obj, armature_obj, bone_name):
     if arm_mod is None:
         arm_mod = mesh_obj.modifiers.new(name="Armature", type="ARMATURE")
     arm_mod.object = armature_obj
+    arm_mod.use_bone_envelopes = False  # P.15: prevent envelope falloff on weapon parts
+    arm_mod.use_vertex_groups = True    # P.15: ensure vertex groups drive deformation
 
     # T20: Force armature modifier to recache vertex group lookups
     arm_mod.show_viewport = False
