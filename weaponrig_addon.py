@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 12, 0),
+    "version": (0, 13, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -2027,6 +2027,230 @@ class WEAPONRIG_OT_import_mesh(bpy.types.Operator, ImportHelper):
 
 
 # ===================================================================
+# MESH PREP OPERATORS (v0.13 — closing the mesh prep gap)
+# ===================================================================
+
+class WEAPONRIG_OT_inspect_mesh(bpy.types.Operator):
+    """Inspect imported mesh: count parts, check scale, check orientation"""
+    bl_idname = "weaponrig.inspect_mesh"
+    bl_label = "Inspect Mesh"
+
+    def execute(self, context):
+        meshes = [o for o in context.selected_objects if o.type == "MESH"]
+        if not meshes:
+            meshes = [o for o in context.scene.objects if o.type == "MESH"]
+        if not meshes:
+            self.report({"ERROR"}, "No mesh objects in scene")
+            return {"CANCELLED"}
+
+        total_verts = sum(len(o.data.vertices) for o in meshes)
+        total_faces = sum(len(o.data.polygons) for o in meshes)
+
+        # Check scale
+        scales = [o.scale for o in meshes]
+        needs_apply = any(abs(s.x - 1.0) > 0.001 or abs(s.y - 1.0) > 0.001 or abs(s.z - 1.0) > 0.001 for s in scales)
+
+        # Check rotation
+        needs_rotate = any(abs(o.rotation_euler.x) > 0.01 or abs(o.rotation_euler.y) > 0.01 or abs(o.rotation_euler.z) > 0.01 for o in meshes)
+
+        # Detect barrel axis (longest bounding box dimension across all meshes)
+        all_bb = []
+        for o in meshes:
+            for corner in o.bound_box:
+                all_bb.append(o.matrix_world @ Vector(corner))
+        if all_bb:
+            xs = [v.x for v in all_bb]
+            ys = [v.y for v in all_bb]
+            zs = [v.z for v in all_bb]
+            extents = {"X": max(xs) - min(xs), "Y": max(ys) - min(ys), "Z": max(zs) - min(zs)}
+            barrel_axis = max(extents, key=extents.get)
+        else:
+            barrel_axis = "?"
+
+        # Count mesh islands in largest mesh
+        largest = max(meshes, key=lambda o: len(o.data.vertices))
+        islands = _separate_loose_parts(largest)
+        island_count = len(islands)
+
+        # Report
+        lines = [
+            f"Objects: {len(meshes)}",
+            f"Vertices: {total_verts:,} | Faces: {total_faces:,}",
+            f"Islands in largest mesh: {island_count}",
+            f"Barrel axis: {barrel_axis} (canonical is -Y)",
+            f"Scale applied: {'YES' if not needs_apply else 'NO — run Apply Transforms'}",
+            f"Rotation applied: {'YES' if not needs_rotate else 'NO — run Apply Transforms'}",
+        ]
+        for line in lines:
+            self.report({"INFO"}, line)
+
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_apply_transforms(bpy.types.Operator):
+    """Apply location, rotation, and scale on all selected mesh objects"""
+    bl_idname = "weaponrig.apply_transforms"
+    bl_label = "Apply Transforms"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        meshes = [o for o in context.selected_objects if o.type == "MESH"]
+        if not meshes:
+            meshes = [o for o in context.scene.objects if o.type == "MESH"]
+        if not meshes:
+            self.report({"ERROR"}, "No mesh objects found")
+            return {"CANCELLED"}
+
+        bpy.ops.object.select_all(action="DESELECT")
+        for o in meshes:
+            o.select_set(True)
+        context.view_layer.objects.active = meshes[0]
+
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+        self.report({"INFO"}, f"Applied transforms on {len(meshes)} objects")
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_normalize_orientation(bpy.types.Operator):
+    """Rotate weapon to canonical orientation: barrel along -Y, magazine along -Z"""
+    bl_idname = "weaponrig.normalize_orientation"
+    bl_label = "Normalize Orientation"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from mathutils import Matrix
+        meshes = [o for o in context.selected_objects if o.type == "MESH"]
+        if not meshes:
+            meshes = [o for o in context.scene.objects if o.type == "MESH"]
+        if not meshes:
+            self.report({"ERROR"}, "No mesh objects found")
+            return {"CANCELLED"}
+
+        # Find longest axis across all meshes
+        all_bb = []
+        for o in meshes:
+            for corner in o.bound_box:
+                all_bb.append(o.matrix_world @ Vector(corner))
+
+        xs = [v.x for v in all_bb]
+        ys = [v.y for v in all_bb]
+        zs = [v.z for v in all_bb]
+        extents = {"X": max(xs) - min(xs), "Y": max(ys) - min(ys), "Z": max(zs) - min(zs)}
+        barrel_axis = max(extents, key=extents.get)
+
+        if barrel_axis == "Y":
+            self.report({"INFO"}, "Already oriented along Y — no rotation needed")
+            return {"FINISHED"}
+
+        # Compute rotation to put barrel along -Y
+        rot = Matrix.Identity(4)
+        if barrel_axis == "X":
+            rot = Matrix.Rotation(math.radians(90), 4, "Z")
+        elif barrel_axis == "Z":
+            rot = Matrix.Rotation(math.radians(-90), 4, "X")
+
+        bpy.ops.object.select_all(action="DESELECT")
+        for o in meshes:
+            o.select_set(True)
+        context.view_layer.objects.active = meshes[0]
+
+        # Apply rotation
+        for o in meshes:
+            o.matrix_world = rot @ o.matrix_world
+
+        bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+        self.report({"INFO"}, f"Rotated from {barrel_axis}-axis to Y-axis, transforms applied")
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_separate_sharp(bpy.types.Operator):
+    """Separate mesh at sharp edges (mechanical boundaries)"""
+    bl_idname = "weaponrig.separate_sharp"
+    bl_label = "Separate by Sharp Edges"
+    bl_options = {"REGISTER", "UNDO"}
+
+    angle: bpy.props.FloatProperty(
+        name="Angle Threshold", default=30.0, min=10.0, max=80.0,
+        description="Edges sharper than this angle become split boundaries",
+    )
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != "MESH":
+            self.report({"ERROR"}, "Select a mesh object")
+            return {"CANCELLED"}
+
+        context.view_layer.objects.active = obj
+        obj.select_set(True)
+        bpy.ops.object.mode_set(mode="EDIT")
+
+        # Select sharp edges
+        bpy.ops.mesh.select_all(action="DESELECT")
+        bpy.ops.mesh.select_mode(type="EDGE")
+        bpy.ops.mesh.edges_select_sharp(sharpness=math.radians(self.angle))
+
+        # Mark as seams
+        bpy.ops.mesh.mark_seam(clear=False)
+
+        # Select all, separate by seam
+        bpy.ops.mesh.select_all(action="SELECT")
+
+        # Split along marked seams by selecting linked by seam boundary
+        bpy.ops.mesh.select_all(action="DESELECT")
+        bpy.ops.mesh.select_mode(type="FACE")
+
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+        # Use loose parts separation (seams create topology breaks)
+        # First, split edges along seams to disconnect geometry
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        bpy.ops.mesh.edge_split()  # Split at sharp edges
+        bpy.ops.mesh.separate(type="LOOSE")
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+        new_count = len([o for o in context.selected_objects if o.type == "MESH"])
+        self.report({"INFO"}, f"Separated into {new_count} parts at {self.angle}° edges")
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_post_cleanup(bpy.types.Operator):
+    """Clean up separated mesh parts: merge doubles, fix normals, remove loose"""
+    bl_idname = "weaponrig.post_cleanup"
+    bl_label = "Post-Separation Cleanup"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        meshes = [o for o in context.selected_objects if o.type == "MESH"]
+        if not meshes:
+            meshes = [o for o in context.scene.objects if o.type == "MESH"]
+        if not meshes:
+            self.report({"ERROR"}, "No mesh objects found")
+            return {"CANCELLED"}
+
+        cleaned = 0
+        for obj in meshes:
+            context.view_layer.objects.active = obj
+            obj.select_set(True)
+            bpy.ops.object.mode_set(mode="EDIT")
+
+            bpy.ops.mesh.select_all(action="SELECT")
+            bpy.ops.mesh.remove_doubles(threshold=0.0001)
+            bpy.ops.mesh.normals_make_consistent(inside=False)
+            bpy.ops.mesh.delete_loose(use_verts=True, use_edges=True, use_faces=False)
+
+            bpy.ops.object.mode_set(mode="OBJECT")
+            obj.select_set(False)
+            cleaned += 1
+
+        self.report({"INFO"}, f"Cleaned {cleaned} mesh objects")
+        return {"FINISHED"}
+
+
+# ===================================================================
 # HELPERS
 # ===================================================================
 
@@ -2105,6 +2329,18 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
                 box.label(text="Auto Run Scripts DISABLED", icon="ERROR")
                 box.label(text="Drivers won't work. Enable in:")
                 box.label(text="Prefs > Save & Load > Auto Run")
+
+        # Mesh Prep tools (v0.13)
+        box = layout.box()
+        box.label(text="Mesh Prep", icon="MESH_DATA")
+        row = box.row(align=True)
+        row.operator("weaponrig.inspect_mesh", text="Inspect", icon="VIEWZOOM")
+        row.operator("weaponrig.apply_transforms", text="Apply Transforms", icon="CHECKMARK")
+        row = box.row(align=True)
+        row.operator("weaponrig.normalize_orientation", text="Normalize", icon="ORIENTATION_GLOBAL")
+        row.operator("weaponrig.post_cleanup", text="Cleanup", icon="BRUSH_DATA")
+        row = box.row(align=True)
+        row.operator("weaponrig.separate_sharp", text="Split Sharp Edges", icon="MOD_EDGESPLIT")
 
         # Weapon type + naming convention
         box = layout.box()
@@ -2718,6 +2954,11 @@ _classes = (
     WEAPONRIG_OT_save_to_library,
     WEAPONRIG_OT_new_config,
     WEAPONRIG_OT_import_mesh,
+    WEAPONRIG_OT_inspect_mesh,
+    WEAPONRIG_OT_apply_transforms,
+    WEAPONRIG_OT_normalize_orientation,
+    WEAPONRIG_OT_separate_sharp,
+    WEAPONRIG_OT_post_cleanup,
     WEAPONRIG_OT_generate_cycle,
     WEAPONRIG_OT_generate_recoil,
     WEAPONRIG_OT_generate_fire_modes,
