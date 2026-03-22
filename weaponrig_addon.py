@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 14, 0),
+    "version": (0, 15, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -1235,6 +1235,8 @@ def _apply_bone_constraints(arm_obj, bone_def, context=None):
     pose_bone = arm_obj.pose.bones.get(display_name)
     if pose_bone is None:
         return 0
+    # GAP 3 fix: ensure euler rotation mode for constraint compatibility
+    pose_bone.rotation_mode = "XYZ"
     count = 0
     for cdef in bone_def.constraints:
         con = pose_bone.constraints.new(type=cdef.type)
@@ -1854,10 +1856,11 @@ def _bind_mesh_to_bone(mesh_obj, armature_obj, bone_name):
             face_verts.add(vi)
     vg.add(list(face_verts) if face_verts else list(range(len(mesh_obj.data.vertices))), 1.0, "REPLACE")
 
-    # Parent mesh to armature
+    # Parent mesh to armature (GAP 4 fix: set inverse matrix so mesh doesn't jump)
     if mesh_obj.parent != armature_obj:
         mesh_obj.parent = armature_obj
         mesh_obj.parent_type = "OBJECT"
+        mesh_obj.matrix_parent_inverse = armature_obj.matrix_world.inverted()
 
     # Add/update Armature modifier
     arm_mod = None
