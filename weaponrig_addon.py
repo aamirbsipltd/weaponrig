@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 7, 0),
+    "version": (0, 8, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -1311,15 +1311,35 @@ def _apply_bone_drivers(arm_obj, bone_def, context=None):
 
         if ddef.cam_curve_keyframes:
             driver.expression = "var"
-            travel = bone_def.parameters.get("carrier_travel_m", 1.0)
-            rot_deg = bone_def.parameters.get("rotation_degrees", 1.0)
+            travel = bone_def.parameters.get("carrier_travel_m", bone_def.parameters.get("assembly_travel_m", bone_def.parameters.get("piston_stroke_m", 1.0)))
+            rot_deg = bone_def.parameters.get("rotation_degrees", bone_def.parameters.get("rotation_per_step_degrees", 1.0))
             rot_rad = math.radians(rot_deg)
-            sorted_kfs = sorted(ddef.cam_curve_keyframes, key=lambda k: k.carrier_travel_pct)
+
+            # Remove auto-generated Generator FModifier (blocks keyframes)
+            for mod in list(fcurve.modifiers):
+                fcurve.modifiers.remove(mod)
+
+            # Remove existing keyframes
             while fcurve.keyframe_points:
                 fcurve.keyframe_points.remove(fcurve.keyframe_points[0])
-            for kf in sorted_kfs:
-                pt = fcurve.keyframe_points.insert(kf.carrier_travel_pct * travel, kf.bolt_rotation_pct * rot_rad)
-                pt.interpolation = "LINEAR"
+
+            sorted_kfs = sorted(ddef.cam_curve_keyframes, key=lambda k: k.carrier_travel_pct)
+            for i, kf in enumerate(sorted_kfs):
+                x_val = -(kf.carrier_travel_pct * travel)  # negative = rearward
+                y_val = -(kf.bolt_rotation_pct * rot_rad)
+                pt = fcurve.keyframe_points.insert(x_val, y_val, options={"FAST"})
+                pt.interpolation = "BEZIER"
+                # Auto-clamped handles prevent overshoot at dwell transitions
+                pt.handle_left_type = "AUTO_CLAMPED"
+                pt.handle_right_type = "AUTO_CLAMPED"
+                # Detect dwell zones and use VECTOR handles (flat)
+                if i > 0 and abs(sorted_kfs[i-1].bolt_rotation_pct - kf.bolt_rotation_pct) < 0.001:
+                    pt.handle_left_type = "VECTOR"
+                if i < len(sorted_kfs) - 1 and abs(sorted_kfs[i+1].bolt_rotation_pct - kf.bolt_rotation_pct) < 0.001:
+                    pt.handle_right_type = "VECTOR"
+
+            fcurve.keyframe_points.sort()
+            fcurve.update()
         else:
             driver.expression = ddef.expression or "var"
 
@@ -1677,8 +1697,15 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
         arm_obj = get_or_create_armature(context)
         convention = context.scene.get("weaponrig_naming", "TITLE")
 
-        # Find mesh matches for positioning
+        # Find mesh matches — name matching first, spatial heuristics as fallback
         mesh_matches = _find_mesh_matches(config)
+        mesh_objects = [o for o in bpy.data.objects if o.type == "MESH"]
+        unmatched_meshes = [o for o in mesh_objects if o not in mesh_matches.values()]
+        if unmatched_meshes:
+            spatial = _spatial_match_parts(config, unmatched_meshes)
+            for bone_name, obj in spatial.items():
+                if bone_name not in mesh_matches:
+                    mesh_matches[bone_name] = obj
 
         if context.object and context.object.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
@@ -1709,6 +1736,12 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
                 if parent_eb:
                     eb.parent = parent_eb
                     eb.use_connect = False
+
+        # Enforce unified skeleton — add dormant bones for animation sharing
+        active_names = {_format_bone_name(b.name, convention) for b in bones_to_add}
+        active_names.update(added)
+        _enforce_unified_skeleton(arm_obj, active_names, context)
+
         bpy.ops.object.mode_set(mode="OBJECT")
 
         # PHASE 2: Apply ALL constraints, drivers, shapes
@@ -2171,6 +2204,12 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
             box.operator("weaponrig.generate_fire_modes", text="Generate All Fire Modes (NLA)", icon="NLA")
             box.operator("weaponrig.play_cycle", text="Play Animation", icon="PLAY")
 
+        # Library section
+        if added:
+            box = layout.box()
+            box.label(text="Library", icon="FILE_FOLDER")
+            box.operator("weaponrig.save_to_library", text="Save to Library", icon="FILE_TICK")
+
         # Export section
         if added:
             box = layout.box()
@@ -2183,6 +2222,10 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
             op.engine = "Unity"
             op = row.operator("weaponrig.export_fbx", text="Godot")
             op.engine = "Godot"
+
+        # New config wizard
+        layout.separator()
+        layout.operator("weaponrig.new_config", text="New Weapon Config", icon="ADD")
 
 
 class WEAPONRIG_PT_cycle(bpy.types.Panel):
@@ -2209,6 +2252,348 @@ class WEAPONRIG_PT_cycle(bpy.types.Panel):
 
 
 # ===================================================================
+# UNIFIED SKELETON (v0.8 — master bone list for animation sharing)
+# ===================================================================
+
+MASTER_BONE_LIST = [
+    ("weapon_root", None), ("ik_hand_gun", "weapon_root"), ("ik_hand_root", "weapon_root"),
+    ("ik_hand_l", "ik_hand_root"), ("ik_hand_r", "ik_hand_root"),
+    ("upper_receiver", "weapon_root"), ("lower_receiver", "weapon_root"), ("frame", "weapon_root"),
+    ("bolt_carrier", "upper_receiver"), ("bolt", "bolt_carrier"), ("cam_pin", "bolt"),
+    ("extractor", "bolt"), ("ejector", "bolt"), ("gas_piston", "upper_receiver"),
+    ("op_rod", "gas_piston"), ("trigger", "weapon_root"), ("hammer", "weapon_root"),
+    ("disconnector", "weapon_root"), ("selector", "weapon_root"), ("striker", "weapon_root"),
+    ("charging_handle", "upper_receiver"), ("cocking_handle", "weapon_root"),
+    ("slide", "weapon_root"), ("magazine", "weapon_root"), ("magazine_release", "weapon_root"),
+    ("magazine_follower", "magazine"), ("dust_cover", "upper_receiver"),
+    ("forward_assist", "upper_receiver"), ("bolt_catch", "weapon_root"),
+    ("barrel", "upper_receiver"), ("muzzle_device", "barrel"), ("handguard", "upper_receiver"),
+    ("sight_front", "barrel"), ("sight_rear", "upper_receiver"),
+    ("stock", "weapon_root"), ("grip", "weapon_root"),
+    ("buffer_spring", "bolt_carrier"), ("recoil_spring", "slide"),
+    ("floating_assembly", "weapon_root"), ("breech_cylinder", "floating_assembly"),
+    ("chamber_insert", "breech_cylinder"), ("spur_gear", "floating_assembly"),
+    ("actuating_gear", "floating_assembly"), ("connecting_rod", "gas_piston"),
+    ("toothed_wheel", "cocking_handle"), ("lock_block", "weapon_root"),
+    ("barrel_assembly", "weapon_root"), ("gas_accelerator", "barrel_assembly"),
+    ("hydraulic_buffer", "barrel_assembly"), ("firing_pin", "bolt"),
+    ("outer_shell", "weapon_root"), ("outer_receiver", "weapon_root"),
+]
+
+
+def _enforce_unified_skeleton(armature_obj, active_bone_names, context):
+    """Add dormant master bones for unified skeleton. Call in EDIT mode."""
+    convention = context.scene.get("weaponrig_naming", "TITLE") if context else "TITLE"
+    arm = armature_obj.data
+    existing = {eb.name for eb in arm.edit_bones}
+
+    for master_name, parent_name in MASTER_BONE_LIST:
+        display = _format_bone_name(master_name.replace("_", " ").title(), convention)
+        if display in existing:
+            continue
+
+        eb = arm.edit_bones.new(display)
+        if parent_name:
+            parent_display = _format_bone_name(parent_name.replace("_", " ").title(), convention)
+            parent_eb = arm.edit_bones.get(parent_display)
+            if parent_eb:
+                eb.parent = parent_eb
+                eb.head = parent_eb.head.copy()
+            else:
+                eb.head = Vector((0, 0, 0))
+        else:
+            eb.head = Vector((0, 0, 0))
+
+        eb.tail = eb.head + Vector((0, 0.005, 0))
+        eb.use_deform = False  # Dormant — won't affect mesh
+
+
+# ===================================================================
+# SAVE-BACK SYSTEM (v0.8 — library learns from rigger's work)
+# ===================================================================
+
+def _read_rig_overrides(armature_obj, config):
+    """Read current rig state and return dict of differences vs config defaults."""
+    overrides = {}
+    arm = armature_obj.data
+
+    for bone_def in config.bones:
+        bone = arm.bones.get(bone_def.name)
+        if not bone:
+            continue
+
+        pb = armature_obj.pose.bones.get(bone_def.name)
+        if not pb:
+            continue
+
+        # Compare constraint values
+        for i, con in enumerate(pb.constraints):
+            if i >= len(bone_def.constraints):
+                break
+            cdef = bone_def.constraints[i]
+            for attr in ("min_x", "max_x", "min_y", "max_y", "min_z", "max_z"):
+                current = getattr(con, attr, 0.0)
+                config_val = getattr(cdef, attr, 0.0)
+                if abs(current - config_val) > 0.001:
+                    overrides[f"bones.{bone_def.name}.constraints.{i}.{attr}"] = round(current, 6)
+
+    return overrides
+
+
+class WEAPONRIG_OT_save_to_library(bpy.types.Operator):
+    """Save current rig adjustments as a named variant"""
+    bl_idname = "weaponrig.save_to_library"
+    bl_label = "Save to Library"
+    bl_options = {"REGISTER", "UNDO"}
+
+    variant_name: bpy.props.StringProperty(name="Variant Name", default="my_variant")
+    description: bpy.props.StringProperty(name="Description", default="")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=400)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "variant_name")
+        layout.prop(self, "description")
+
+    def execute(self, context):
+        weapon_type = context.scene.weaponrig_weapon_type
+        if weapon_type not in WEAPON_CONFIGS:
+            self.report({"ERROR"}, "No weapon config loaded")
+            return {"CANCELLED"}
+
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if arm_obj is None:
+            self.report({"ERROR"}, "No WeaponRig armature found")
+            return {"CANCELLED"}
+
+        config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
+        overrides = _read_rig_overrides(arm_obj, config)
+
+        if not overrides:
+            self.report({"INFO"}, "No changes detected — rig matches config defaults")
+            return {"CANCELLED"}
+
+        # Save variant into the in-memory config
+        safe_name = self.variant_name.lower().replace(" ", "_").replace("-", "_")
+        if "variants" not in WEAPON_CONFIGS[weapon_type]:
+            WEAPON_CONFIGS[weapon_type]["variants"] = {}
+        WEAPON_CONFIGS[weapon_type]["variants"][safe_name] = {
+            "description": self.description,
+            "overrides": overrides,
+        }
+
+        self.report({"INFO"}, f"Saved variant '{safe_name}' with {len(overrides)} overrides")
+        return {"FINISHED"}
+
+
+# ===================================================================
+# SPATIAL PART MATCHING (v0.8 — fuzzy heuristics when names don't match)
+# ===================================================================
+
+_SPATIAL_RULES = {
+    "barrel": {"dominant_axis": "Y", "aspect_min": 5.0},
+    "magazine": {"z_below": True, "dominant_axis": "Z"},
+    "trigger": {"z_below": True, "volume": "small"},
+    "stock": {"y_behind": True},
+    "grip": {"z_below": True, "y_behind": True},
+    "muzzle_device": {"y_front": True, "volume": "small"},
+    "dust_cover": {"x_right": True, "volume": "small"},
+    "forward_assist": {"x_right": True, "volume": "tiny"},
+    "selector": {"x_left": True, "volume": "tiny"},
+    "charging_handle": {"z_above": True, "y_behind": True, "volume": "small"},
+    "slide": {"z_above": True, "dominant_axis": "Y"},
+}
+
+
+def _spatial_match_parts(config, mesh_objects):
+    """Match mesh objects to bones using spatial heuristics. Returns {bone_name: obj}."""
+    if not mesh_objects:
+        return {}
+
+    # Compute weapon center and mesh info
+    all_centers = [_obj_centroid(o) for o in mesh_objects]
+    weapon_center = sum(all_centers, Vector()) / len(all_centers)
+    all_volumes = []
+
+    mesh_info = {}
+    for obj in mesh_objects:
+        bb = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+        center = sum(bb, Vector()) / 8
+        xs, ys, zs = [v.x for v in bb], [v.y for v in bb], [v.z for v in bb]
+        ex, ey, ez = max(xs)-min(xs), max(ys)-min(ys), max(zs)-min(zs)
+        vol = max(ex * ey * ez, 1e-9)
+        all_volumes.append(vol)
+        dominant = "Y" if ey >= ex and ey >= ez else ("X" if ex >= ez else "Z")
+        aspect = max(ex, ey, ez) / max(min(ex, ey, ez), 0.0001)
+        mesh_info[obj.name] = {
+            "obj": obj, "center": center, "rel": center - weapon_center,
+            "ex": ex, "ey": ey, "ez": ez, "vol": vol, "dominant": dominant, "aspect": aspect,
+        }
+
+    median_vol = sorted(all_volumes)[len(all_volumes) // 2] if all_volumes else 1.0
+    matches = {}
+    used = set()
+
+    for bone_def in config.bones:
+        bone_lower = bone_def.name.lower().replace(" ", "_")
+        rules = _SPATIAL_RULES.get(bone_lower)
+        if not rules:
+            continue
+
+        best_obj = None
+        best_score = 0.0
+
+        for name, info in mesh_info.items():
+            if name in used:
+                continue
+            score = 0.0
+            checks = 0
+
+            if "dominant_axis" in rules:
+                checks += 1
+                if info["dominant"] == rules["dominant_axis"]:
+                    score += 1.0
+            if "aspect_min" in rules:
+                checks += 1
+                if info["aspect"] >= rules["aspect_min"]:
+                    score += 1.0
+            if "z_below" in rules:
+                checks += 1
+                if info["rel"].z < -0.005:
+                    score += 1.0
+            if "z_above" in rules:
+                checks += 1
+                if info["rel"].z > 0.005:
+                    score += 1.0
+            if "y_behind" in rules:
+                checks += 1
+                if info["rel"].y > 0.005:
+                    score += 1.0
+            if "y_front" in rules:
+                checks += 1
+                if info["rel"].y < -0.005:
+                    score += 1.0
+            if "x_right" in rules:
+                checks += 1
+                if info["rel"].x > 0.003:
+                    score += 1.0
+            if "x_left" in rules:
+                checks += 1
+                if info["rel"].x < -0.003:
+                    score += 1.0
+            if "volume" in rules:
+                checks += 1
+                if rules["volume"] == "small" and info["vol"] < median_vol * 0.5:
+                    score += 1.0
+                elif rules["volume"] == "tiny" and info["vol"] < median_vol * 0.15:
+                    score += 1.0
+
+            norm_score = score / max(checks, 1)
+            if norm_score > best_score and norm_score >= 0.5:
+                best_score = norm_score
+                best_obj = info["obj"]
+
+        if best_obj:
+            matches[bone_def.name] = best_obj
+            used.add(best_obj.name)
+
+    return matches
+
+
+# ===================================================================
+# CONFIG WIZARD (v0.8 — create starter config for new weapon types)
+# ===================================================================
+
+class WEAPONRIG_OT_new_config(bpy.types.Operator):
+    """Create a starter config for a new weapon type"""
+    bl_idname = "weaponrig.new_config"
+    bl_label = "New Weapon Config"
+    bl_options = {"REGISTER"}
+
+    weapon_name: bpy.props.StringProperty(name="Weapon Name", default="My Weapon")
+    base_type: bpy.props.EnumProperty(
+        name="Base Operating System",
+        items=[
+            ("RIFLE_DI", "Rifle — Direct Impingement (AR-15 style)", ""),
+            ("RIFLE_PISTON", "Rifle — Short-Stroke Piston (MCX/SCAR style)", ""),
+            ("RIFLE_LONG_PISTON", "Rifle — Long-Stroke Piston (AK style)", ""),
+            ("PISTOL_SHORT_RECOIL", "Pistol — Short Recoil (Glock/1911 style)", ""),
+            ("SMG_BLOWBACK", "SMG — Blowback or Roller-Delayed", ""),
+            ("BULLPUP", "Bullpup — Action behind trigger", ""),
+            ("EXOTIC", "Exotic — Rotary breech, other", ""),
+            ("BLANK", "Blank — Empty template", ""),
+        ],
+        default="RIFLE_DI",
+    )
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=400)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "weapon_name")
+        layout.prop(self, "base_type")
+
+    def execute(self, context):
+        safe_id = self.weapon_name.lower().replace(" ", "_").replace("-", "_")
+
+        # Base bones for each type
+        base_bones = {
+            "RIFLE_DI": ["Weapon Root", "Upper Receiver", "Bolt Carrier", "Bolt", "Trigger", "Selector",
+                         "Charging Handle", "Magazine", "Dust Cover", "Forward Assist", "Hammer"],
+            "RIFLE_PISTON": ["Weapon Root", "Upper Receiver", "Bolt Carrier", "Bolt", "Gas Piston",
+                             "Trigger", "Selector", "Charging Handle", "Magazine"],
+            "RIFLE_LONG_PISTON": ["Weapon Root", "Bolt Carrier", "Bolt", "Gas Piston",
+                                   "Trigger", "Selector", "Magazine", "Dust Cover"],
+            "PISTOL_SHORT_RECOIL": ["Frame", "Slide", "Barrel", "Trigger", "Hammer",
+                                     "Magazine", "Magazine Release"],
+            "SMG_BLOWBACK": ["Weapon Root", "Bolt Carrier", "Trigger", "Selector",
+                              "Charging Handle", "Magazine"],
+            "BULLPUP": ["Outer Receiver", "Barrel Assembly", "Bolt", "Op Rod",
+                         "Trigger", "Selector", "Charging Handle", "Magazine"],
+            "EXOTIC": ["Outer Shell", "Floating Assembly", "Barrel", "Breech Cylinder",
+                        "Trigger", "Selector", "Magazine"],
+            "BLANK": ["Weapon Root"],
+        }
+
+        bones_list = []
+        selected_bones = base_bones.get(self.base_type, ["Weapon Root"])
+        for i, name in enumerate(selected_bones):
+            bone = {
+                "name": name,
+                "parent": selected_bones[0] if i > 0 else None,
+                "presence": "required" if i < 5 else "optional",
+                "movement_type": "static" if i < 2 else "translate",
+                "axis": "Y",
+                "description": f"{name} — edit this description",
+                "placement": f"Place at the {name.lower()} location on your weapon",
+            }
+            bones_list.append(bone)
+
+        new_config = {
+            "schema_version": "1.0",
+            "operating_system": safe_id,
+            "display_name": self.weapon_name,
+            "description": f"Custom config for {self.weapon_name}",
+            "fire_modes": ["semi"],
+            "cyclic_rate_rpm": {"semi": None},
+            "bones": bones_list,
+            "physics": {},
+            "part_name_aliases": {},
+        }
+
+        WEAPON_CONFIGS[safe_id] = new_config
+        self.report({"INFO"}, f"Created config '{safe_id}' with {len(bones_list)} bones. Select it from the dropdown.")
+        return {"FINISHED"}
+
+
+# ===================================================================
 # REGISTRATION
 # ===================================================================
 
@@ -2223,6 +2608,8 @@ _classes = (
     WEAPONRIG_OT_bind_all,
     WEAPONRIG_OT_test_rig,
     WEAPONRIG_OT_validate_export,
+    WEAPONRIG_OT_save_to_library,
+    WEAPONRIG_OT_new_config,
     WEAPONRIG_OT_import_mesh,
     WEAPONRIG_OT_generate_cycle,
     WEAPONRIG_OT_generate_recoil,
