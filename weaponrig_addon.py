@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 5, 0),
+    "version": (0, 6, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -1040,9 +1040,11 @@ def _create_cube_widget():
     return obj
 
 
-def _assign_bone_shape(armature_obj, bone_def):
+def _assign_bone_shape(armature_obj, bone_def, context=None):
     """Assign custom shape to a pose bone based on its movement type."""
-    pose_bone = armature_obj.pose.bones.get(bone_def.name)
+    convention = context.scene.get("weaponrig_naming", "TITLE") if context else "TITLE"
+    display_name = _format_bone_name(bone_def.name, convention)
+    pose_bone = armature_obj.pose.bones.get(display_name)
     if pose_bone is None:
         return
     if bone_def.movement_type == "translate":
@@ -1069,6 +1071,47 @@ AXIS_VECTORS = {
     "-Z": Vector((0, 0, -0.05)),
 }
 DEFAULT_TAIL = Vector((0, 0.05, 0))
+
+
+def _orient_bone(eb, bone_def):
+    """Orient bone based on its movement type so LOCAL-space constraints work correctly.
+
+    - translate: Y-axis along travel direction, Z-up
+    - rotate/scale: Y-axis along rotation axis, Z-up
+    - static: default Y-up, Z toward world Z
+    """
+    _axis_map = {
+        "X": Vector((1, 0, 0)), "Y": Vector((0, 1, 0)), "Z": Vector((0, 0, 1)),
+        "-X": Vector((-1, 0, 0)), "-Y": Vector((0, -1, 0)), "-Z": Vector((0, 0, -1)),
+    }
+    axis_vec = _axis_map.get(bone_def.axis, Vector((0, 1, 0)))
+    length = 0.05
+
+    if bone_def.movement_type == "translate":
+        eb.tail = eb.head + axis_vec.normalized() * length
+    elif bone_def.movement_type in ("rotate", "scale"):
+        eb.tail = eb.head + axis_vec.normalized() * length
+    else:
+        eb.tail = eb.head + Vector((0, 0.05, 0))
+
+    # Set roll so Z-axis points up (or closest to up given the bone direction)
+    up = Vector((0, 0, 1))
+    bone_y = (eb.tail - eb.head).normalized()
+    if abs(bone_y.dot(up)) > 0.99:
+        up = Vector((0, 1, 0))
+    eb.align_roll(up)
+
+
+def _format_bone_name(name, convention="TITLE"):
+    """Convert Title Case bone name to the selected naming convention."""
+    words = name.split()
+    if convention == "SNAKE":
+        return "_".join(w.lower() for w in words)
+    elif convention == "PASCAL":
+        return "".join(w.capitalize() for w in words)
+    elif convention == "UPPER_SNAKE":
+        return "_".join(w.upper() for w in words)
+    return name  # TITLE = as-is
 
 
 def get_or_create_armature(context):
@@ -1107,16 +1150,17 @@ def add_single_bone(config, bone_name, armature_obj, position, context):
     armature_obj.select_set(True)
     bpy.ops.object.mode_set(mode="EDIT")
 
-    eb = armature_obj.data.edit_bones.new(bone_def.name)
+    # Apply naming convention
+    display_name = _format_bone_name(bone_def.name, context.scene.get("weaponrig_naming", "TITLE"))
+    eb = armature_obj.data.edit_bones.new(display_name)
     eb.head = position.copy()
 
-    if bone_def.axis and bone_def.axis in AXIS_VECTORS:
-        eb.tail = eb.head + AXIS_VECTORS[bone_def.axis]
-    else:
-        eb.tail = eb.head + DEFAULT_TAIL
+    # Orient bone based on movement type (critical for LOCAL-space constraints)
+    _orient_bone(eb, bone_def)
 
     if bone_def.parent:
-        parent_eb = armature_obj.data.edit_bones.get(bone_def.parent)
+        parent_name = _format_bone_name(bone_def.parent, context.scene.get("weaponrig_naming", "TITLE"))
+        parent_eb = armature_obj.data.edit_bones.get(parent_name)
         if parent_eb:
             eb.parent = parent_eb
             eb.use_connect = False
@@ -1124,7 +1168,7 @@ def add_single_bone(config, bone_name, armature_obj, position, context):
     bpy.ops.object.mode_set(mode="OBJECT")
 
     info = {
-        "name": bone_def.name,
+        "name": display_name,
         "parent": bone_def.parent,
         "movement": bone_def.movement_type,
         "axis": bone_def.axis,
@@ -1133,77 +1177,27 @@ def add_single_bone(config, bone_name, armature_obj, position, context):
         "description": bone_def.description or "",
     }
 
-    info["constraints_added"] = _apply_bone_constraints(armature_obj, bone_def)
-    info["drivers_added"] = _apply_bone_drivers(armature_obj, bone_def)
-    _assign_bone_shape(armature_obj, bone_def)
-    _assign_bone_collection(armature_obj, bone_def)
-    _colorize_bone(armature_obj, bone_def)
-    _store_bone_metadata(armature_obj, bone_def)
+    info["constraints_added"] = _apply_bone_constraints(armature_obj, bone_def, context)
+    info["drivers_added"] = _apply_bone_drivers(armature_obj, bone_def, context)
+    _assign_bone_shape(armature_obj, bone_def, context)
+
+    # Force depsgraph to recognize new constraints/drivers
+    armature_obj.update_tag()
+    context.view_layer.update()
 
     return info
-
-
-def _assign_bone_collection(armature_obj, bone_def):
-    """Assign bone to a named collection based on presence."""
-    arm = armature_obj.data
-    if not hasattr(arm, "collections"):
-        return  # Blender < 4.0
-    coll_name = "Required Bones" if bone_def.presence in ("required", "expected") else "Optional Bones"
-    bcoll = arm.collections.get(coll_name)
-    if bcoll is None:
-        bcoll = arm.collections.new(coll_name)
-    bone = arm.bones.get(bone_def.name)
-    if bone:
-        bcoll.assign(bone)
-
-
-def _colorize_bone(armature_obj, bone_def):
-    """Color-code bone by category using Blender 4.0+ palette."""
-    arm = armature_obj.data
-    bone = arm.bones.get(bone_def.name)
-    if bone is None or not hasattr(bone, "color"):
-        return
-    palette_map = {
-        "required": "THEME01",   # red
-        "expected": "THEME06",   # yellow
-        "optional": "THEME04",   # blue
-    }
-    bone.color.palette = palette_map.get(bone_def.presence, "DEFAULT")
-    arm.show_bone_colors = True
-
-
-def _store_bone_metadata(armature_obj, bone_def):
-    """Store description and placement as custom properties on the pose bone."""
-    pose_bone = armature_obj.pose.bones.get(bone_def.name)
-    if pose_bone is None:
-        return
-    if bone_def.description:
-        pose_bone["description"] = bone_def.description
-    if bone_def.placement:
-        pose_bone["placement"] = bone_def.placement
-    pose_bone["movement_type"] = bone_def.movement_type
-    pose_bone["presence"] = bone_def.presence
-    if bone_def.axis:
-        pose_bone["axis"] = bone_def.axis
-    if bone_def.parameters:
-        # Store simplified specs string
-        specs = []
-        for k, v in bone_def.parameters.items():
-            if k in ("source", "pivot_description") or isinstance(v, (list, dict)):
-                continue
-            specs.append(f"{k.replace('_', ' ').title()}: {v}")
-        if specs:
-            pose_bone["specs"] = " | ".join(specs)
 
 
 # ===================================================================
 # CONSTRAINT BUILDER
 # ===================================================================
 
-def _apply_bone_constraints(arm_obj, bone_def):
+def _apply_bone_constraints(arm_obj, bone_def, context=None):
     if not bone_def.constraints:
         return 0
-    pose_bone = arm_obj.pose.bones.get(bone_def.name)
+    convention = context.scene.get("weaponrig_naming", "TITLE") if context else "TITLE"
+    display_name = _format_bone_name(bone_def.name, convention)
+    pose_bone = arm_obj.pose.bones.get(display_name)
     if pose_bone is None:
         return 0
     count = 0
@@ -1286,14 +1280,21 @@ def _parse_prop(prop):
     return parts[0], _AXIS_INDEX[parts[1]]
 
 
-def _apply_bone_drivers(arm_obj, bone_def):
+def _apply_bone_drivers(arm_obj, bone_def, context=None):
     if not bone_def.drivers:
         return 0
-    pose_bone = arm_obj.pose.bones.get(bone_def.name)
+    convention = context.scene.get("weaponrig_naming", "TITLE") if context else "TITLE"
+    display_name = _format_bone_name(bone_def.name, convention)
+    pose_bone = arm_obj.pose.bones.get(display_name)
     if pose_bone is None:
         return 0
     count = 0
     for ddef in bone_def.drivers:
+        # Check driver bone exists before creating driver
+        driver_display = _format_bone_name(ddef.driver_bone, convention)
+        if driver_display not in arm_obj.pose.bones:
+            continue  # Skip driver if target bone missing
+
         data_path, axis_idx = _parse_prop(ddef.driven_property)
         fcurve = pose_bone.driver_add(data_path, axis_idx)
         driver = fcurve.driver
@@ -1304,7 +1305,7 @@ def _apply_bone_drivers(arm_obj, bone_def):
         var.type = "TRANSFORMS"
         tgt = var.targets[0]
         tgt.id = arm_obj
-        tgt.bone_target = ddef.driver_bone
+        tgt.bone_target = driver_display
         tgt.transform_type = _PROPERTY_TO_TRANSFORM[ddef.driver_property]
         tgt.transform_space = "LOCAL_SPACE"
 
@@ -1651,6 +1652,91 @@ class WEAPONRIG_OT_select_bone(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
+    """Add all remaining bones in one fast batch (minimal mode switches)"""
+    bl_idname = "weaponrig.add_all_bones"
+    bl_label = "Add All Remaining Bones"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        weapon_type = context.scene.weaponrig_weapon_type
+        if weapon_type not in WEAPON_CONFIGS:
+            self.report({"ERROR"}, f"Unknown weapon type: {weapon_type}")
+            return {"CANCELLED"}
+
+        config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
+        added = set(_get_added_list(context))
+        skipped = set(_get_skipped_list(context))
+        position = context.scene.cursor.location.copy()
+
+        bones_to_add = [b for b in config.bones if b.name not in added and b.name not in skipped]
+        if not bones_to_add:
+            self.report({"INFO"}, "All bones already added or skipped")
+            return {"CANCELLED"}
+
+        arm_obj = get_or_create_armature(context)
+        convention = context.scene.get("weaponrig_naming", "TITLE")
+
+        if context.object and context.object.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        context.view_layer.objects.active = arm_obj
+        arm_obj.select_set(True)
+
+        # PHASE 1: Create ALL bones in one EDIT session
+        bpy.ops.object.mode_set(mode="EDIT")
+        for bone_def in bones_to_add:
+            display_name = _format_bone_name(bone_def.name, convention)
+            eb = arm_obj.data.edit_bones.new(display_name)
+            eb.head = position.copy()
+            _orient_bone(eb, bone_def)
+            if bone_def.parent:
+                parent_name = _format_bone_name(bone_def.parent, convention)
+                parent_eb = arm_obj.data.edit_bones.get(parent_name)
+                if parent_eb:
+                    eb.parent = parent_eb
+                    eb.use_connect = False
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+        # PHASE 2: Apply ALL constraints, drivers, shapes in one pass
+        created = 0
+        for bone_def in bones_to_add:
+            _apply_bone_constraints(arm_obj, bone_def, context)
+            _apply_bone_drivers(arm_obj, bone_def, context)
+            _assign_bone_shape(arm_obj, bone_def, context)
+            created += 1
+
+        # ONE depsgraph update for everything
+        arm_obj.update_tag()
+        context.view_layer.update()
+
+        # Track added bones
+        added_list = _get_added_list(context)
+        for bone_def in bones_to_add:
+            if bone_def.name not in added_list:
+                added_list.append(bone_def.name)
+        context.scene.weaponrig_added_bones = json.dumps(added_list)
+
+        self.report({"INFO"}, f"Batch added {created} bones (2 mode switches total)")
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_skip_bone(bpy.types.Operator):
+    """Skip a bone — mark it as not present on this model"""
+    bl_idname = "weaponrig.skip_bone"
+    bl_label = "Skip Bone"
+    bl_options = {"REGISTER", "UNDO"}
+
+    bone_name: bpy.props.StringProperty(name="Bone Name")
+
+    def execute(self, context):
+        skipped = _get_skipped_list(context)
+        if self.bone_name not in skipped:
+            skipped.append(self.bone_name)
+            context.scene.weaponrig_skipped_bones = json.dumps(skipped)
+        self.report({"INFO"}, f"Skipped: {self.bone_name}")
+        return {"FINISHED"}
+
+
 class WEAPONRIG_OT_auto_detect(bpy.types.Operator):
     """Auto-detect mesh parts and place bones at their centers"""
     bl_idname = "weaponrig.auto_detect"
@@ -1804,6 +1890,16 @@ def _get_added_list(context):
         return []
 
 
+def _get_skipped_list(context):
+    raw = context.scene.get("weaponrig_skipped_bones", "")
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+
+
 def _selection_centroid(context):
     obj = context.active_object
     if obj and obj.type == "MESH" and obj.mode == "EDIT":
@@ -1851,10 +1947,20 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
         layout = self.layout
         scene = context.scene
 
-        # Weapon type selector
+        # Driver auto-run warning
+        if hasattr(bpy.context.preferences.filepaths, "autorun_disabled"):
+            if bpy.context.preferences.filepaths.autorun_disabled:
+                box = layout.box()
+                box.alert = True
+                box.label(text="Auto Run Scripts DISABLED", icon="ERROR")
+                box.label(text="Drivers won't work. Enable in:")
+                box.label(text="Prefs > Save & Load > Auto Run")
+
+        # Weapon type + naming convention
         box = layout.box()
         box.label(text="Weapon Type", icon="PREFERENCES")
         box.prop(scene, "weaponrig_weapon_type", text="")
+        box.prop(scene, "weaponrig_naming", text="Naming")
 
         weapon_type = scene.weaponrig_weapon_type
         if weapon_type not in WEAPON_CONFIGS:
@@ -1863,6 +1969,7 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
 
         config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
         added = set(_get_added_list(context))
+        skipped = set(_get_skipped_list(context))
 
         # Auto-detect button
         mesh_count = sum(1 for o in bpy.data.objects if o.type == "MESH")
@@ -1870,6 +1977,12 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
             box = layout.box()
             box.label(text=f"Scene Meshes: {mesh_count}", icon="MESH_DATA")
             box.operator("weaponrig.auto_detect", text="Auto-Detect & Place Bones", icon="VIEWZOOM")
+
+        # Batch add button
+        remaining = sum(1 for b in config.bones if b.name not in added and b.name not in skipped)
+        if remaining > 0:
+            box = layout.box()
+            box.operator("weaponrig.add_all_bones", text=f"Add All {remaining} Bones at Cursor", icon="ADD")
 
         # Bone checklist
         box = layout.box()
@@ -1883,6 +1996,7 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
 
         for bone_def in config.bones:
             is_added = bone_def.name in added
+            is_skipped = bone_def.name in skipped
             is_required = bone_def.presence in ("required", "expected")
 
             if is_required:
@@ -1900,6 +2014,10 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
                 row.label(text=bone_def.name)
                 op = row.operator("weaponrig.select_bone", text="", icon="RESTRICT_SELECT_OFF")
                 op.bone_name = bone_def.name
+            elif is_skipped:
+                row.label(text="", icon="CANCEL")
+                row.label(text=bone_def.name)
+                row.label(text="(skipped)")
             else:
                 if bone_def.presence == "required":
                     row.label(text="", icon="LAYER_ACTIVE")
@@ -1908,6 +2026,9 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
                 else:
                     row.label(text="", icon="RADIOBUT_OFF")
                 row.label(text=bone_def.name)
+                # Skip button for each unadded bone
+                op = row.operator("weaponrig.skip_bone", text="", icon="X")
+                op.bone_name = bone_def.name
                 if next_bone is None:
                     next_bone = bone_def
 
@@ -1955,6 +2076,9 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
             op = row.operator("weaponrig.add_bone", text="Add at Selection", icon="RESTRICT_SELECT_OFF")
             op.bone_name = next_bone.name
             op.use_selection = True
+        elif not added:
+            box = layout.box()
+            box.label(text="Select a bone or use Add All", icon="INFO")
         else:
             box = layout.box()
             box.label(text="All bones added!", icon="CHECKMARK")
@@ -2013,252 +2137,6 @@ class WEAPONRIG_PT_cycle(bpy.types.Panel):
         layout.label(text="Drag to simulate firing cycle", icon="PLAY")
 
 
-# ===================================================================
-# BONE INFO PANEL (v0.5 — shows selected bone details)
-# ===================================================================
-
-class WEAPONRIG_PT_bone_info(bpy.types.Panel):
-    """Per-bone info panel — shows description, placement, specs when a bone is selected"""
-    bl_label = "Bone Info"
-    bl_idname = "WEAPONRIG_PT_bone_info"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "WeaponRig"
-    bl_options = {"DEFAULT_CLOSED"}
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_pose_bone is not None
-
-    def draw(self, context):
-        layout = self.layout
-        pb = context.active_pose_bone
-        if pb is None:
-            return
-
-        box = layout.box()
-        box.label(text=pb.name, icon="BONE_DATA")
-
-        if "movement_type" in pb:
-            row = box.row()
-            row.label(text=f"Type: {pb['movement_type']}", icon="CON_LOCLIKE")
-            if "axis" in pb:
-                row.label(text=f"Axis: {pb['axis']}")
-
-        if "presence" in pb:
-            pres = pb["presence"]
-            icon = "LAYER_ACTIVE" if pres == "required" else ("LAYER_USED" if pres == "expected" else "RADIOBUT_OFF")
-            box.label(text=f"Presence: {pres}", icon=icon)
-
-        if "description" in pb:
-            box.separator()
-            box.label(text="Description:", icon="INFO")
-            _wrap_text(box, str(pb["description"]))
-
-        if "placement" in pb:
-            box.separator()
-            box.label(text="Placement:", icon="CURSOR")
-            _wrap_text(box, str(pb["placement"]))
-
-        if "specs" in pb:
-            box.separator()
-            box.label(text="Specs:", icon="PREFERENCES")
-            for spec in str(pb["specs"]).split(" | "):
-                box.label(text=f"  {spec}")
-
-        # Show constraints summary
-        if pb.constraints:
-            box.separator()
-            box.label(text=f"Constraints: {len(pb.constraints)}", icon="CONSTRAINT_BONE")
-            for con in pb.constraints:
-                box.label(text=f"  {con.type.replace('_', ' ').title()}")
-
-
-# ===================================================================
-# POSE LIBRARY PRESETS (v0.5)
-# ===================================================================
-
-class WEAPONRIG_OT_save_pose(bpy.types.Operator):
-    """Save current bone positions as a named pose"""
-    bl_idname = "weaponrig.save_pose"
-    bl_label = "Save Pose"
-    bl_options = {"REGISTER", "UNDO"}
-
-    pose_name: bpy.props.StringProperty(name="Pose Name", default="Custom Pose")
-
-    def execute(self, context):
-        arm_obj = None
-        for obj in context.scene.objects:
-            if obj.type == "ARMATURE" and obj.get("weaponrig"):
-                arm_obj = obj
-                break
-        if arm_obj is None:
-            self.report({"WARNING"}, "No WeaponRig armature found")
-            return {"CANCELLED"}
-
-        if arm_obj.animation_data is None:
-            arm_obj.animation_data_create()
-
-        action = bpy.data.actions.new(name=self.pose_name)
-        for pb in arm_obj.pose.bones:
-            data_path_loc = f'pose.bones["{pb.name}"].location'
-            data_path_rot = f'pose.bones["{pb.name}"].rotation_euler'
-            data_path_scl = f'pose.bones["{pb.name}"].scale'
-            for i in range(3):
-                if pb.location[i] != 0.0:
-                    fc = action.fcurves.new(data_path=data_path_loc, index=i, action_group=pb.name)
-                    fc.keyframe_points.insert(0, pb.location[i])
-                if pb.rotation_euler[i] != 0.0:
-                    fc = action.fcurves.new(data_path=data_path_rot, index=i, action_group=pb.name)
-                    fc.keyframe_points.insert(0, pb.rotation_euler[i])
-                if pb.scale[i] != 1.0:
-                    fc = action.fcurves.new(data_path=data_path_scl, index=i, action_group=pb.name)
-                    fc.keyframe_points.insert(0, pb.scale[i])
-
-        if hasattr(action, "asset_mark"):
-            action.asset_mark()
-            if hasattr(action, "asset_data") and action.asset_data:
-                action.asset_data.description = f"WeaponRig pose: {self.pose_name}"
-
-        self.report({"INFO"}, f"Saved pose: {self.pose_name}")
-        return {"FINISHED"}
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
-
-
-class WEAPONRIG_OT_apply_pose(bpy.types.Operator):
-    """Apply a saved pose preset"""
-    bl_idname = "weaponrig.apply_pose"
-    bl_label = "Apply Pose"
-    bl_options = {"REGISTER", "UNDO"}
-
-    pose_name: bpy.props.StringProperty(name="Pose Name")
-
-    def execute(self, context):
-        arm_obj = None
-        for obj in context.scene.objects:
-            if obj.type == "ARMATURE" and obj.get("weaponrig"):
-                arm_obj = obj
-                break
-        if arm_obj is None:
-            self.report({"WARNING"}, "No WeaponRig armature found")
-            return {"CANCELLED"}
-
-        action = bpy.data.actions.get(self.pose_name)
-        if action is None:
-            self.report({"ERROR"}, f"Pose '{self.pose_name}' not found")
-            return {"CANCELLED"}
-
-        for fc in action.fcurves:
-            try:
-                arm_obj.pose.bones[0]  # ensure pose bones exist
-                data_path = fc.data_path
-                idx = fc.array_index
-                if fc.keyframe_points:
-                    val = fc.keyframe_points[0].co[1]
-                    arm_obj.path_resolve(data_path)[idx] = val
-            except (IndexError, KeyError, ValueError):
-                continue
-
-        context.view_layer.update()
-        for area in context.screen.areas:
-            if area.type == "VIEW_3D":
-                area.tag_redraw()
-
-        self.report({"INFO"}, f"Applied pose: {self.pose_name}")
-        return {"FINISHED"}
-
-
-class WEAPONRIG_OT_reset_pose(bpy.types.Operator):
-    """Reset all bones to rest position"""
-    bl_idname = "weaponrig.reset_pose"
-    bl_label = "Reset Pose"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        arm_obj = None
-        for obj in context.scene.objects:
-            if obj.type == "ARMATURE" and obj.get("weaponrig"):
-                arm_obj = obj
-                break
-        if arm_obj is None:
-            return {"CANCELLED"}
-
-        for pb in arm_obj.pose.bones:
-            pb.location = (0, 0, 0)
-            pb.rotation_euler = (0, 0, 0)
-            pb.rotation_quaternion = (1, 0, 0, 0)
-            pb.scale = (1, 1, 1)
-
-        context.view_layer.update()
-        for area in context.screen.areas:
-            if area.type == "VIEW_3D":
-                area.tag_redraw()
-
-        self.report({"INFO"}, "All bones reset to rest position")
-        return {"FINISHED"}
-
-
-class WEAPONRIG_PT_poses(bpy.types.Panel):
-    """Pose library panel"""
-    bl_label = "Pose Library"
-    bl_idname = "WEAPONRIG_PT_poses"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "WeaponRig"
-    bl_options = {"DEFAULT_CLOSED"}
-
-    @classmethod
-    def poll(cls, context):
-        return len(_get_added_list(context)) > 0
-
-    def draw(self, context):
-        layout = self.layout
-
-        # Save / Reset
-        row = layout.row(align=True)
-        row.operator("weaponrig.save_pose", text="Save Current Pose", icon="FILE_TICK")
-        row.operator("weaponrig.reset_pose", text="Reset", icon="LOOP_BACK")
-
-        # List saved poses
-        pose_actions = [a for a in bpy.data.actions if a.name.startswith(("Bolt ", "Mag", "Dust", "Safety", "Custom", "Fire_"))]
-        if pose_actions:
-            box = layout.box()
-            box.label(text="Saved Poses:", icon="ACTION")
-            for action in pose_actions:
-                row = box.row(align=True)
-                row.label(text=action.name)
-                op = row.operator("weaponrig.apply_pose", text="", icon="PLAY")
-                op.pose_name = action.name
-
-
-# ===================================================================
-# ADDON PREFERENCES (v0.5)
-# ===================================================================
-
-class WeaponRigPreferences(bpy.types.AddonPreferences):
-    bl_idname = __name__
-
-    show_placement_hints: bpy.props.BoolProperty(
-        name="Show Placement Hints", default=True,
-        description="Show bone placement guidance in the panel",
-    )
-    auto_colorize: bpy.props.BoolProperty(
-        name="Auto Color-Code Bones", default=True,
-        description="Color bones by category (required/optional) on creation",
-    )
-    default_engine: bpy.props.EnumProperty(
-        name="Default Export Engine",
-        items=[("UE5", "Unreal Engine 5", ""), ("Unity", "Unity", ""), ("Godot", "Godot", "")],
-        default="UE5",
-    )
-
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "show_placement_hints")
-        layout.prop(self, "auto_colorize")
-        layout.prop(self, "default_engine")
 
 
 # ===================================================================
@@ -2266,10 +2144,11 @@ class WeaponRigPreferences(bpy.types.AddonPreferences):
 # ===================================================================
 
 _classes = (
-    WeaponRigPreferences,
     WeaponRigProperties,
     WEAPONRIG_OT_add_bone,
     WEAPONRIG_OT_select_bone,
+    WEAPONRIG_OT_add_all_bones,
+    WEAPONRIG_OT_skip_bone,
     WEAPONRIG_OT_auto_detect,
     WEAPONRIG_OT_assign_weights,
     WEAPONRIG_OT_import_mesh,
@@ -2279,13 +2158,8 @@ _classes = (
     WEAPONRIG_OT_segment_mesh,
     WEAPONRIG_OT_export_fbx,
     WEAPONRIG_OT_play_cycle,
-    WEAPONRIG_OT_save_pose,
-    WEAPONRIG_OT_apply_pose,
-    WEAPONRIG_OT_reset_pose,
     WEAPONRIG_PT_main,
     WEAPONRIG_PT_cycle,
-    WEAPONRIG_PT_bone_info,
-    WEAPONRIG_PT_poses,
 )
 
 
@@ -2307,6 +2181,22 @@ def register():
         description="JSON list of added bone names",
         default="",
     )
+    bpy.types.Scene.weaponrig_skipped_bones = bpy.props.StringProperty(
+        name="Skipped Bones",
+        description="JSON list of skipped bone names",
+        default="",
+    )
+    bpy.types.Scene.weaponrig_naming = bpy.props.EnumProperty(
+        name="Naming",
+        description="Bone naming convention",
+        items=[
+            ("TITLE", "Title Case", "Bolt Carrier"),
+            ("SNAKE", "snake_case", "bolt_carrier"),
+            ("PASCAL", "PascalCase", "BoltCarrier"),
+            ("UPPER_SNAKE", "UPPER_SNAKE", "BOLT_CARRIER"),
+        ],
+        default="TITLE",
+    )
     bpy.types.Scene.weaponrig_props = bpy.props.PointerProperty(type=WeaponRigProperties)
     _draw_handler = bpy.types.SpaceView3D.draw_handler_add(
         _draw_constraint_ranges, (), "WINDOW", "POST_VIEW"
@@ -2319,6 +2209,8 @@ def unregister():
         bpy.types.SpaceView3D.draw_handler_remove(_draw_handler, "WINDOW")
         _draw_handler = None
     del bpy.types.Scene.weaponrig_props
+    del bpy.types.Scene.weaponrig_naming
+    del bpy.types.Scene.weaponrig_skipped_bones
     del bpy.types.Scene.weaponrig_added_bones
     del bpy.types.Scene.weaponrig_weapon_type
     for cls in reversed(_classes):
