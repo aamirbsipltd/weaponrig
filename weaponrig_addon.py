@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 9, 0),
+    "version": (0, 10, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -1126,9 +1126,12 @@ def _orient_bone(eb, bone_def):
 
     eb.tail = eb.head + direction.normalized() * 0.05
 
+    bone_dir = (eb.tail - eb.head).normalized()
     up = Vector((0, 0, 1))
-    if abs((eb.tail - eb.head).normalized().dot(up)) > 0.99:
-        up = Vector((0, 1, 0))
+    if abs(bone_dir.dot(up)) > 0.95:
+        # Near-parallel to Z: use cross product for guaranteed perpendicular
+        arbitrary = Vector((1, 0, 0)) if abs(bone_dir.x) < 0.95 else Vector((0, 1, 0))
+        up = bone_dir.cross(arbitrary).normalized()
     eb.align_roll(up)
 
 
@@ -1382,6 +1385,11 @@ def _apply_bone_drivers(arm_obj, bone_def, context=None):
             expr = expr.replace("var * -", "var * ").replace("var *-", "var * ")
             if expr.startswith("-var"):
                 expr = expr[1:]
+            # Clamp input to constraint range to prevent over-rotation (BUG 2.4)
+            travel = abs(bone_def.parameters.get("carrier_travel_m",
+                     bone_def.parameters.get("assembly_travel_m", 0)))
+            if travel > 0 and "var *" in expr:
+                expr = expr.replace("var", f"min(var, {travel})")
             driver.expression = expr
 
         count += 1
@@ -1804,6 +1812,10 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
 
         arm_obj.update_tag()
         context.view_layer.update()
+        # Force full driver evaluation for chained drivers (BUG 4.2)
+        frame = context.scene.frame_current
+        context.scene.frame_set(frame + 1)
+        context.scene.frame_set(frame)
 
         # Track added bones
         added_list = _get_added_list(context)
@@ -1824,7 +1836,13 @@ def _bind_mesh_to_bone(mesh_obj, armature_obj, bone_name):
     if existing_vg:
         mesh_obj.vertex_groups.remove(existing_vg)
     vg = mesh_obj.vertex_groups.new(name=bone_name)
-    vg.add(list(range(len(mesh_obj.data.vertices))), 1.0, "REPLACE")
+    # Only assign face-connected vertices (BUG 3.4: orphan vertices
+    # inflate bounding boxes in game engines)
+    face_verts = set()
+    for poly in mesh_obj.data.polygons:
+        for vi in poly.vertices:
+            face_verts.add(vi)
+    vg.add(list(face_verts) if face_verts else list(range(len(mesh_obj.data.vertices))), 1.0, "REPLACE")
 
     # Parent mesh to armature
     if mesh_obj.parent != armature_obj:
@@ -2334,18 +2352,17 @@ def _enforce_unified_skeleton(armature_obj, active_bone_names, context):
             continue
 
         eb = arm.edit_bones.new(display)
+        # ALL dormant bones at EXACTLY origin (BUG 3.5: consistent positions
+        # for UE5 retargeting — varying positions cause animation artifacts)
+        eb.head = Vector((0, 0, 0))
+        eb.tail = Vector((0, 0.005, 0))
+        # Still set parent for hierarchy, but position stays at origin
         if parent_name:
             parent_display = _format_bone_name(parent_name.replace("_", " ").title(), convention)
             parent_eb = arm.edit_bones.get(parent_display)
             if parent_eb:
                 eb.parent = parent_eb
-                eb.head = parent_eb.head.copy()
-            else:
-                eb.head = Vector((0, 0, 0))
-        else:
-            eb.head = Vector((0, 0, 0))
-
-        eb.tail = eb.head + Vector((0, 0.005, 0))
+                eb.use_connect = False
         eb.use_deform = False  # Dormant — won't affect mesh
 
 
@@ -3024,66 +3041,70 @@ def _create_fire_mode_actions(armature, cycle_action, recoil_action, config, fps
 # ===================================================================
 
 def _separate_loose_parts(obj):
-    """Separate mesh into disconnected islands. Returns list of new objects."""
+    """Separate mesh into disconnected islands. Returns list of vertex index sets."""
     import bmesh
     bm = bmesh.new()
-    bm.from_mesh(obj.data)
-    bm.verts.ensure_lookup_table()
+    try:
+        bm.from_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
 
-    visited = set()
-    islands = []
-    for v in bm.verts:
-        if v.index in visited:
-            continue
-        island = set()
-        stack = [v]
-        while stack:
-            vert = stack.pop()
-            if vert.index in visited:
+        visited = set()
+        islands = []
+        for v in bm.verts:
+            if v.index in visited:
                 continue
-            visited.add(vert.index)
-            island.add(vert.index)
-            for edge in vert.link_edges:
-                other = edge.other_vert(vert)
-                if other.index not in visited:
-                    stack.append(other)
-        islands.append(island)
-    bm.free()
-    return islands
+            island = set()
+            stack = [v]
+            while stack:
+                vert = stack.pop()
+                if vert.index in visited:
+                    continue
+                visited.add(vert.index)
+                island.add(vert.index)
+                for edge in vert.link_edges:
+                    other = edge.other_vert(vert)
+                    if other.index not in visited:
+                        stack.append(other)
+            islands.append(island)
+        return islands
+    finally:
+        bm.free()
 
 
 def _segment_by_dihedral(obj, angle_threshold_deg=45.0):
     """Segment fused mesh at sharp edges using region growing. Returns list of face index sets."""
     import bmesh
     bm = bmesh.new()
-    bm.from_mesh(obj.data)
-    bm.faces.ensure_lookup_table()
+    try:
+        bm.from_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
 
-    threshold = math.radians(angle_threshold_deg)
-    visited = set()
-    regions = []
+        threshold = math.radians(angle_threshold_deg)
+        visited = set()
+        regions = []
 
-    for face in bm.faces:
-        if face.index in visited:
-            continue
-        region = set()
-        stack = [face]
-        while stack:
-            f = stack.pop()
-            if f.index in visited:
+        for face in bm.faces:
+            if face.index in visited:
                 continue
-            visited.add(f.index)
-            region.add(f.index)
-            for edge in f.edges:
-                for neighbor in edge.link_faces:
-                    if neighbor.index != f.index and neighbor.index not in visited:
-                        angle = f.normal.angle(neighbor.normal, 0.0)
-                        if angle < threshold:
-                            stack.append(neighbor)
-        if len(region) > 0:
-            regions.append(region)
-    bm.free()
-    return regions
+            region = set()
+            stack = [face]
+            while stack:
+                f = stack.pop()
+                if f.index in visited:
+                    continue
+                visited.add(f.index)
+                region.add(f.index)
+                for edge in f.edges:
+                    for neighbor in edge.link_faces:
+                        if neighbor.index != f.index and neighbor.index not in visited:
+                            angle = f.normal.angle(neighbor.normal, 0.0)
+                            if angle < threshold:
+                                stack.append(neighbor)
+            if len(region) > 0:
+                regions.append(region)
+        return regions
+    finally:
+        bm.free()
 
 
 # ===================================================================
