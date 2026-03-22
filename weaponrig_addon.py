@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 10, 0),
+    "version": (0, 11, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -1326,6 +1326,13 @@ def _apply_bone_drivers(arm_obj, bone_def, context=None):
         # All driven properties use LOCAL Y (index 1) because orient_bone
         # aligned LOCAL Y to the movement axis
         prop_base = ddef.driven_property.split(".")[0]
+
+        # BUG 2.1: Remove existing driver before adding (prevents silent replacement)
+        try:
+            pose_bone.driver_remove(prop_base, 1)
+        except TypeError:
+            pass  # No existing driver — fine
+
         fcurve = pose_bone.driver_add(prop_base, 1)
         driver = fcurve.driver
         driver.type = "SCRIPTED"
@@ -1350,7 +1357,7 @@ def _apply_bone_drivers(arm_obj, bone_def, context=None):
             tgt.transform_type = "ROT_Y"
         else:
             tgt.transform_type = "LOC_Y"
-        tgt.transform_space = "LOCAL_SPACE"
+        tgt.transform_space = "TRANSFORM_SPACE"  # Post-constraint values (BUG 2.4)
 
         if ddef.cam_curve_keyframes:
             driver.expression = "var"
@@ -1790,6 +1797,9 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
         active_names = {_format_bone_name(b.name, convention) for b in bones_to_add}
         active_names.update(added)
         _enforce_unified_skeleton(arm_obj, active_names, context)
+
+        # BUG 2.7: Prevent FBX gimbal lock at 90/180 degree parent angles
+        _apply_gimbal_safe_offsets(arm_obj.data)
 
         bpy.ops.object.mode_set(mode="OBJECT")
 
@@ -2364,6 +2374,23 @@ def _enforce_unified_skeleton(armature_obj, active_bone_names, context):
                 eb.parent = parent_eb
                 eb.use_connect = False
         eb.use_deform = False  # Dormant — won't affect mesh
+
+
+def _apply_gimbal_safe_offsets(armature):
+    """BUG 2.7: Nudge bone rolls to avoid exact 90/180 degree parent-child
+    angles that cause FBX export rotation artifacts in UE5/Unity.
+    Must be called in EDIT mode after all bones are positioned."""
+    EPSILON = 0.008727  # ~0.5 degrees in radians
+    for eb in armature.edit_bones:
+        if not eb.parent:
+            continue
+        bone_dir = (eb.tail - eb.head)
+        parent_dir = (eb.parent.tail - eb.parent.head)
+        if bone_dir.length < 0.0001 or parent_dir.length < 0.0001:
+            continue
+        angle = bone_dir.angle(parent_dir)
+        if abs(angle - math.pi / 2) < 0.03 or abs(angle - math.pi) < 0.03:
+            eb.roll += EPSILON
 
 
 # ===================================================================
