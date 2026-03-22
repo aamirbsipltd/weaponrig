@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 6, 0),
+    "version": (0, 7, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -1653,7 +1653,7 @@ class WEAPONRIG_OT_select_bone(bpy.types.Operator):
 
 
 class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
-    """Add all remaining bones in one fast batch (minimal mode switches)"""
+    """Add all remaining bones positioned at matched mesh centroids"""
     bl_idname = "weaponrig.add_all_bones"
     bl_label = "Add All Remaining Bones"
     bl_options = {"REGISTER", "UNDO"}
@@ -1667,7 +1667,7 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
         config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
         added = set(_get_added_list(context))
         skipped = set(_get_skipped_list(context))
-        position = context.scene.cursor.location.copy()
+        fallback_pos = context.scene.cursor.location.copy()
 
         bones_to_add = [b for b in config.bones if b.name not in added and b.name not in skipped]
         if not bones_to_add:
@@ -1677,6 +1677,9 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
         arm_obj = get_or_create_armature(context)
         convention = context.scene.get("weaponrig_naming", "TITLE")
 
+        # Find mesh matches for positioning
+        mesh_matches = _find_mesh_matches(config)
+
         if context.object and context.object.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         context.view_layer.objects.active = arm_obj
@@ -1684,11 +1687,22 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
 
         # PHASE 1: Create ALL bones in one EDIT session
         bpy.ops.object.mode_set(mode="EDIT")
+        arm_inv = arm_obj.matrix_world.inverted()
         for bone_def in bones_to_add:
             display_name = _format_bone_name(bone_def.name, convention)
             eb = arm_obj.data.edit_bones.new(display_name)
-            eb.head = position.copy()
+            eb.use_deform = True
+
+            # Position at matched mesh centroid, or fallback to cursor
+            matched_mesh = mesh_matches.get(bone_def.name)
+            if matched_mesh:
+                world_pos = _obj_centroid(matched_mesh)
+                eb.head = arm_inv @ world_pos
+            else:
+                eb.head = arm_inv @ fallback_pos
+
             _orient_bone(eb, bone_def)
+
             if bone_def.parent:
                 parent_name = _format_bone_name(bone_def.parent, convention)
                 parent_eb = arm_obj.data.edit_bones.get(parent_name)
@@ -1697,7 +1711,7 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
                     eb.use_connect = False
         bpy.ops.object.mode_set(mode="OBJECT")
 
-        # PHASE 2: Apply ALL constraints, drivers, shapes in one pass
+        # PHASE 2: Apply ALL constraints, drivers, shapes
         created = 0
         for bone_def in bones_to_add:
             _apply_bone_constraints(arm_obj, bone_def, context)
@@ -1705,7 +1719,15 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
             _assign_bone_shape(arm_obj, bone_def, context)
             created += 1
 
-        # ONE depsgraph update for everything
+        # PHASE 3: Bind matched meshes to bones
+        bound = 0
+        for bone_def in bones_to_add:
+            matched_mesh = mesh_matches.get(bone_def.name)
+            if matched_mesh:
+                display_name = _format_bone_name(bone_def.name, convention)
+                _bind_mesh_to_bone(matched_mesh, arm_obj, display_name)
+                bound += 1
+
         arm_obj.update_tag()
         context.view_layer.update()
 
@@ -1716,8 +1738,34 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
                 added_list.append(bone_def.name)
         context.scene.weaponrig_added_bones = json.dumps(added_list)
 
-        self.report({"INFO"}, f"Batch added {created} bones (2 mode switches total)")
+        matched_count = len(mesh_matches)
+        self.report({"INFO"}, f"Added {created} bones, positioned {matched_count} on mesh, bound {bound} parts")
         return {"FINISHED"}
+
+
+def _bind_mesh_to_bone(mesh_obj, armature_obj, bone_name):
+    """Bind all vertices of mesh_obj to bone_name with weight 1.0."""
+    # Create/replace vertex group
+    existing_vg = mesh_obj.vertex_groups.get(bone_name)
+    if existing_vg:
+        mesh_obj.vertex_groups.remove(existing_vg)
+    vg = mesh_obj.vertex_groups.new(name=bone_name)
+    vg.add(list(range(len(mesh_obj.data.vertices))), 1.0, "REPLACE")
+
+    # Parent mesh to armature
+    if mesh_obj.parent != armature_obj:
+        mesh_obj.parent = armature_obj
+        mesh_obj.parent_type = "OBJECT"
+
+    # Add/update Armature modifier
+    arm_mod = None
+    for mod in mesh_obj.modifiers:
+        if mod.type == "ARMATURE":
+            arm_mod = mod
+            break
+    if arm_mod is None:
+        arm_mod = mesh_obj.modifiers.new(name="Armature", type="ARMATURE")
+    arm_mod.object = armature_obj
 
 
 class WEAPONRIG_OT_skip_bone(bpy.types.Operator):
@@ -2083,11 +2131,31 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
             box = layout.box()
             box.label(text="All bones added!", icon="CHECKMARK")
 
-        # Mesh tools (show when bones exist)
+        # Part matching info (show when bones exist)
+        if added:
+            mesh_matches = _find_mesh_matches(config)
+            box = layout.box()
+            box.label(text=f"Part Matching ({len(mesh_matches)}/{len(config.bones)} matched)", icon="MESH_DATA")
+            for bone_def in config.bones:
+                if bone_def.name in added:
+                    row = box.row(align=True)
+                    matched = mesh_matches.get(bone_def.name)
+                    if matched:
+                        row.label(text=bone_def.name, icon="CHECKMARK")
+                        row.label(text=matched.name)
+                    else:
+                        row.label(text=bone_def.name, icon="QUESTION")
+                        row.label(text="(no mesh)")
+
+            row = box.row(align=True)
+            row.operator("weaponrig.bind_all", text="Bind All Parts", icon="CONSTRAINT_BONE")
+            row.operator("weaponrig.assign_weights", text="Nearest Bone", icon="BONE_DATA")
+
+        # Rig testing
         if added:
             box = layout.box()
-            box.label(text="Mesh Tools", icon="MOD_VERTEX_WEIGHT")
-            box.operator("weaponrig.assign_weights", text="Assign Mesh to Bones", icon="BONE_DATA")
+            box.label(text="Verification", icon="CHECKMARK")
+            box.operator("weaponrig.test_rig", text="Test Rig", icon="PLAY")
             box.operator("weaponrig.segment_mesh", text="Segment Fused Mesh", icon="MOD_EXPLODE")
 
         # Animation section
@@ -2107,6 +2175,7 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
         if added:
             box = layout.box()
             box.label(text="Export", icon="EXPORT")
+            box.operator("weaponrig.validate_export", text="Validate for Export", icon="CHECKMARK")
             row = box.row(align=True)
             op = row.operator("weaponrig.export_fbx", text="UE5")
             op.engine = "UE5"
@@ -2151,6 +2220,9 @@ _classes = (
     WEAPONRIG_OT_skip_bone,
     WEAPONRIG_OT_auto_detect,
     WEAPONRIG_OT_assign_weights,
+    WEAPONRIG_OT_bind_all,
+    WEAPONRIG_OT_test_rig,
+    WEAPONRIG_OT_validate_export,
     WEAPONRIG_OT_import_mesh,
     WEAPONRIG_OT_generate_cycle,
     WEAPONRIG_OT_generate_recoil,
@@ -2868,6 +2940,180 @@ class WEAPONRIG_OT_play_cycle(bpy.types.Operator):
         context.scene.frame_end = int(end)
         context.scene.frame_current = int(start)
         bpy.ops.screen.animation_play()
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_bind_all(bpy.types.Operator):
+    """Bind all matched mesh parts to their bones (vertex groups + armature modifier)"""
+    bl_idname = "weaponrig.bind_all"
+    bl_label = "Bind All Parts"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        weapon_type = context.scene.weaponrig_weapon_type
+        if weapon_type not in WEAPON_CONFIGS:
+            self.report({"ERROR"}, f"Unknown weapon type: {weapon_type}")
+            return {"CANCELLED"}
+
+        config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if arm_obj is None:
+            self.report({"ERROR"}, "No WeaponRig armature found")
+            return {"CANCELLED"}
+
+        convention = context.scene.get("weaponrig_naming", "TITLE")
+        mesh_matches = _find_mesh_matches(config)
+        bound = 0
+
+        for bone_name, mesh_obj in mesh_matches.items():
+            display_name = _format_bone_name(bone_name, convention)
+            if display_name in [b.name for b in arm_obj.data.bones]:
+                _bind_mesh_to_bone(mesh_obj, arm_obj, display_name)
+                bound += 1
+
+        arm_obj.update_tag()
+        context.view_layer.update()
+
+        self.report({"INFO"}, f"Bound {bound}/{len(mesh_matches)} mesh parts to bones")
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_test_rig(bpy.types.Operator):
+    """Test the rig — verify constraints, drivers, and mesh binding"""
+    bl_idname = "weaponrig.test_rig"
+    bl_label = "Test Rig"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        weapon_type = context.scene.weaponrig_weapon_type
+        if weapon_type not in WEAPON_CONFIGS:
+            self.report({"ERROR"}, f"Unknown weapon type: {weapon_type}")
+            return {"CANCELLED"}
+
+        config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if arm_obj is None:
+            self.report({"ERROR"}, "No WeaponRig armature found")
+            return {"CANCELLED"}
+
+        convention = context.scene.get("weaponrig_naming", "TITLE")
+        issues = []
+
+        # Check 1: All expected bones exist
+        for bone_def in config.bones:
+            display_name = _format_bone_name(bone_def.name, convention)
+            if display_name not in [b.name for b in arm_obj.data.bones]:
+                if bone_def.presence == "required":
+                    issues.append(f"MISSING: Required bone '{display_name}'")
+
+        # Check 2: All bones marked as deform
+        for bone in arm_obj.data.bones:
+            if not bone.use_deform:
+                issues.append(f"WARN: '{bone.name}' not marked as deform")
+
+        # Check 3: Mesh binding — check vertex groups
+        mesh_objects = [o for o in context.scene.objects if o.type == "MESH" and o.parent == arm_obj]
+        bone_names = {b.name for b in arm_obj.data.bones}
+        for obj in mesh_objects:
+            has_matching_vg = False
+            for vg in obj.vertex_groups:
+                if vg.name in bone_names:
+                    has_matching_vg = True
+                    break
+            if not has_matching_vg:
+                issues.append(f"WARN: '{obj.name}' has no vertex group matching a bone")
+            has_mod = any(m.type == "ARMATURE" and m.object == arm_obj for m in obj.modifiers)
+            if not has_mod:
+                issues.append(f"WARN: '{obj.name}' missing Armature modifier")
+
+        # Check 4: Scale
+        s = arm_obj.scale
+        if not (abs(s.x - 1.0) < 0.001 and abs(s.y - 1.0) < 0.001 and abs(s.z - 1.0) < 0.001):
+            issues.append(f"ERROR: Armature scale is {tuple(s)} — apply scale first (Ctrl+A)")
+
+        # Check 5: Constraints exist on bones that should have them
+        for bone_def in config.bones:
+            if not bone_def.constraints:
+                continue
+            display_name = _format_bone_name(bone_def.name, convention)
+            pb = arm_obj.pose.bones.get(display_name)
+            if pb and len(pb.constraints) == 0:
+                issues.append(f"WARN: '{display_name}' should have constraints but has none")
+
+        # Check 6: Drivers exist on bones that should have them
+        driver_paths = set()
+        if arm_obj.animation_data:
+            for fc in arm_obj.animation_data.drivers:
+                driver_paths.add(fc.data_path)
+        for bone_def in config.bones:
+            if not bone_def.drivers:
+                continue
+            display_name = _format_bone_name(bone_def.name, convention)
+            for ddef in bone_def.drivers:
+                expected_path = f'pose.bones["{display_name}"]'
+                found = any(expected_path in dp for dp in driver_paths)
+                if not found:
+                    issues.append(f"WARN: Driver missing on '{display_name}'")
+
+        if issues:
+            for issue in issues:
+                self.report({"WARNING"}, issue)
+            self.report({"WARNING"}, f"Found {len(issues)} issues")
+        else:
+            self.report({"INFO"}, "All checks passed — rig is production-ready")
+
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_validate_export(bpy.types.Operator):
+    """Validate rig before FBX export"""
+    bl_idname = "weaponrig.validate_export"
+    bl_label = "Validate for Export"
+
+    def execute(self, context):
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if arm_obj is None:
+            self.report({"ERROR"}, "No WeaponRig armature found")
+            return {"CANCELLED"}
+
+        issues = []
+        mesh_objects = [o for o in context.scene.objects if o.type == "MESH" and o.parent == arm_obj]
+
+        if not mesh_objects:
+            issues.append("ERROR: No mesh objects bound to armature")
+
+        s = arm_obj.scale
+        if not (abs(s.x - 1.0) < 0.001 and abs(s.y - 1.0) < 0.001 and abs(s.z - 1.0) < 0.001):
+            issues.append(f"ERROR: Apply armature scale (currently {s.x:.2f}, {s.y:.2f}, {s.z:.2f})")
+
+        for obj in mesh_objects:
+            if not any(m.type == "ARMATURE" for m in obj.modifiers):
+                issues.append(f"ERROR: '{obj.name}' missing Armature modifier")
+            if len(obj.vertex_groups) == 0:
+                issues.append(f"ERROR: '{obj.name}' has no vertex groups")
+
+        for bone in arm_obj.data.bones:
+            if not bone.use_deform:
+                issues.append(f"WARN: Bone '{bone.name}' not deformable — won't export")
+
+        if issues:
+            for issue in issues:
+                self.report({"WARNING"}, issue)
+        else:
+            self.report({"INFO"}, "Ready for export")
+
         return {"FINISHED"}
 
 
