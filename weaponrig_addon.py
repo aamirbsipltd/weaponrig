@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 3, 0),
+    "version": (0, 4, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -349,6 +349,255 @@ WEAPON_CONFIGS = {
             "Upper Receiver": ["*upper*", "*upper*receiver*"],
             "Weapon Root": ["*lower*", "*lower*receiver*", "*receiver*", "*body*", "*frame*"],
         },
+    },
+    "ak47_long_stroke": {
+        "schema_version": "1.0",
+        "operating_system": "ak47_long_stroke_piston",
+        "display_name": "AK-47 Long-Stroke Piston",
+        "description": "Kalashnikov long-stroke gas piston with rotating bolt",
+        "fire_modes": ["semi", "auto"],
+        "cyclic_rate_rpm": {"semi": None, "auto": 600},
+        "bones": [
+            {"name": "Receiver", "parent": None, "presence": "required", "movement_type": "static",
+             "description": "Stamped/milled receiver - root of all bones", "placement": "Place at rear trunnion"},
+            {"name": "Bolt Carrier", "parent": "Receiver", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.125, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"carrier_travel_m": 0.125, "carrier_mass_kg": 0.460, "buffer_spring_rate_n_per_m": 2800},
+             "description": "Piston and carrier are one piece. Gas drives entire assembly rearward ~125mm",
+             "placement": "Place at rear of bolt carrier, centered in receiver channel"},
+            {"name": "Bolt", "parent": "Bolt Carrier", "presence": "required", "movement_type": "rotate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_y": 0.0, "max_y": 0.611, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 35.0, "lug_count": 2},
+             "description": "Two-lug rotating bolt. Rotates 35 degrees to lock/unlock",
+             "placement": "Place at bolt face, centered on bore axis"},
+            {"name": "Gas Piston", "parent": "Bolt Carrier", "presence": "required", "movement_type": "static",
+             "description": "Integral with bolt carrier (long-stroke). Moves as one unit",
+             "placement": "Place at front of gas piston, above barrel at gas block"},
+            {"name": "Trigger", "parent": "Receiver", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -0.262, "max_x": 0.0, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 15.0},
+             "description": "Trigger rotates ~15 degrees. Releases hammer",
+             "placement": "Place at trigger pin hole in receiver"},
+            {"name": "Hammer", "parent": "Receiver", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -0.785, "max_x": 0.0, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 45.0},
+             "description": "Hammer rotates ~45 degrees under spring tension to strike firing pin",
+             "placement": "Place at hammer pin hole, behind trigger"},
+            {"name": "Safety Selector", "parent": "Receiver", "presence": "required", "movement_type": "rotate", "axis": "Z",
+             "constraints": [{"type": "LIMIT_ROTATION", "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"positions": [{"name": "safe", "angle_degrees": 0}, {"name": "auto", "angle_degrees": 90}, {"name": "semi", "angle_degrees": 180}]},
+             "description": "Large right-side lever. Up=safe (blocks carrier), middle=auto, down=semi",
+             "placement": "Place at selector pivot on right side of receiver"},
+            {"name": "Dust Cover", "parent": "Bolt Carrier", "presence": "expected", "movement_type": "static",
+             "description": "Reciprocates with bolt carrier via a tab. Covers ejection port",
+             "placement": "Place at top of receiver, on dust cover"},
+            {"name": "Charging Handle", "parent": "Bolt Carrier", "presence": "expected", "movement_type": "static",
+             "description": "Integral with bolt carrier on right side. Reciprocates during firing",
+             "placement": "Place at charging handle on right side of bolt carrier"},
+            {"name": "Magazine", "parent": None, "presence": "required", "movement_type": "translate", "axis": "Z",
+             "description": "Curved 30-round magazine. Rock-and-lock insertion",
+             "placement": "Place at top of magazine where it meets magazine well"},
+            {"name": "Recoil Spring", "parent": "Bolt Carrier", "presence": "optional", "movement_type": "scale", "axis": "Y",
+             "drivers": [{"driven_property": "scale.y", "driver_bone": "Bolt Carrier", "driver_property": "location.y",
+                          "expression": "1.0 + (var / 0.125) * 0.35", "description": "Spring compresses as carrier moves back"}],
+             "description": "Recoil spring on guide rod inside receiver/stock",
+             "placement": "Place at front of recoil spring guide rod"},
+        ],
+        "physics": {"carrier_mass_kg": 0.460, "buffer_spring_rate_n_per_m": 2800, "gas_impulse_duration_ms": 1.5,
+                    "carrier_peak_velocity_m_per_s": 5.2, "bolt_carrier_mass_kg": 0.460},
+        "part_name_aliases": {"Bolt Carrier": ["*carrier*", "*bcg*"], "Bolt": ["*bolt*"], "Trigger": ["*trigger*"],
+                              "Safety Selector": ["*safety*", "*selector*"], "Magazine": ["*mag*"],
+                              "Receiver": ["*receiver*", "*body*"]},
+    },
+    "glock17_short_recoil": {
+        "schema_version": "1.0",
+        "operating_system": "glock17_short_recoil",
+        "display_name": "Glock 17 Short Recoil",
+        "description": "Browning cam-lug short recoil with tilting barrel",
+        "fire_modes": ["semi"],
+        "cyclic_rate_rpm": {"semi": None},
+        "bones": [
+            {"name": "Frame", "parent": None, "presence": "required", "movement_type": "static",
+             "description": "Polymer frame - root bone. Contains trigger mechanism",
+             "placement": "Place at the frame rail, below the barrel"},
+            {"name": "Slide", "parent": "Frame", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.064, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"carrier_travel_m": 0.064, "carrier_mass_kg": 0.130, "buffer_spring_rate_n_per_m": 2200},
+             "description": "Slide travels rearward ~64mm. Houses barrel, extractor, striker",
+             "placement": "Place at rear of slide"},
+            {"name": "Barrel", "parent": "Slide", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -0.070, "max_x": 0.0, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 4.0},
+             "description": "Barrel tilts ~4 degrees down at breech as cam lug rides off frame crosspin",
+             "placement": "Place at barrel chamber end, where it locks into slide"},
+            {"name": "Trigger", "parent": "Frame", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -0.175, "max_x": 0.0, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 10.0},
+             "description": "Safe Action trigger with center blade safety. ~10 degree pull",
+             "placement": "Place at trigger pin in frame"},
+            {"name": "Trigger Safety", "parent": "Trigger", "presence": "optional", "movement_type": "rotate", "axis": "X",
+             "description": "Center blade that must be depressed before trigger can move",
+             "placement": "Place at center of trigger face"},
+            {"name": "Striker", "parent": "Slide", "presence": "optional", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.008, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "description": "Partially pre-cocked striker. Trigger completes cocking and releases",
+             "placement": "Place at rear of striker channel in slide"},
+            {"name": "Slide Stop", "parent": "Frame", "presence": "expected", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0.0, "max_x": 0.175, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "description": "Holds slide open after last round",
+             "placement": "Place at slide stop pivot on left side of frame"},
+            {"name": "Magazine", "parent": None, "presence": "required", "movement_type": "translate", "axis": "Z",
+             "description": "Double-stack 17-round magazine",
+             "placement": "Place at top of magazine where it meets the grip"},
+            {"name": "Magazine Release", "parent": "Frame", "presence": "expected", "movement_type": "translate", "axis": "X",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.003, "use_min_x": True, "use_max_x": True,
+                              "min_y": 0.0, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "description": "Reversible magazine release button",
+             "placement": "Place at magazine release on trigger guard area"},
+            {"name": "Extractor", "parent": "Slide", "presence": "optional", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0.0, "max_x": 0.087, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "description": "Spring-loaded extractor on right side of slide",
+             "placement": "Place at extractor claw on slide"},
+        ],
+        "physics": {"carrier_mass_kg": 0.130, "buffer_spring_rate_n_per_m": 2200, "gas_impulse_duration_ms": 0.8,
+                    "carrier_peak_velocity_m_per_s": 7.0, "bolt_carrier_mass_kg": 0.130},
+        "part_name_aliases": {"Slide": ["*slide*"], "Barrel": ["*barrel*"], "Frame": ["*frame*", "*lower*", "*grip*"],
+                              "Trigger": ["*trigger*"], "Magazine": ["*mag*"], "Striker": ["*striker*", "*firing*pin*"]},
+    },
+    "mp5_roller_delayed": {
+        "schema_version": "1.0",
+        "operating_system": "mp5_roller_delayed_blowback",
+        "display_name": "MP5 Roller-Delayed Blowback",
+        "description": "HK roller-delayed blowback with fluted chamber",
+        "fire_modes": ["semi", "auto", "burst_3"],
+        "cyclic_rate_rpm": {"semi": None, "auto": 800, "burst_3": 800},
+        "bones": [
+            {"name": "Receiver", "parent": None, "presence": "required", "movement_type": "static",
+             "description": "Stamped steel receiver - root bone",
+             "placement": "Place at rear of receiver where stock attaches"},
+            {"name": "Bolt Carrier", "parent": "Receiver", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.105, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"carrier_travel_m": 0.105, "carrier_mass_kg": 0.350, "buffer_spring_rate_n_per_m": 3000},
+             "description": "Bolt carrier with locking piece wedge. Moves rearward ~105mm",
+             "placement": "Place at rear of bolt carrier assembly"},
+            {"name": "Bolt Head", "parent": "Bolt Carrier", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.004, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "description": "Bolt head moves 4mm before carrier — this is the delay. 4:1 mechanical disadvantage",
+             "placement": "Place at bolt face"},
+            {"name": "Roller Left", "parent": "Bolt Head", "presence": "optional", "movement_type": "translate", "axis": "X",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": -0.003, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": 0.0, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "description": "Left locking roller. Cammed outward to lock, inward to unlock",
+             "placement": "Place at left roller recess in barrel extension"},
+            {"name": "Roller Right", "parent": "Bolt Head", "presence": "optional", "movement_type": "translate", "axis": "X",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.003, "use_min_x": True, "use_max_x": True,
+                              "min_y": 0.0, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "description": "Right locking roller",
+             "placement": "Place at right roller recess"},
+            {"name": "Trigger", "parent": "Receiver", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -0.262, "max_x": 0.0, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "description": "Trigger housed in modular grip/trigger group",
+             "placement": "Place at trigger pin in grip frame"},
+            {"name": "Cocking Handle", "parent": "Receiver", "presence": "expected", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.080, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "description": "Non-reciprocating cocking handle. Does NOT move during firing",
+             "placement": "Place at cocking handle tube on top/left of receiver"},
+            {"name": "Selector", "parent": "Receiver", "presence": "expected", "movement_type": "rotate", "axis": "Z",
+             "constraints": [{"type": "LIMIT_ROTATION", "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "description": "Fire selector: safe/semi/burst/auto depending on trigger pack",
+             "placement": "Place at selector on left side of grip frame"},
+            {"name": "Magazine", "parent": None, "presence": "required", "movement_type": "translate", "axis": "Z",
+             "description": "Curved 30-round magazine",
+             "placement": "Place at top of magazine"},
+        ],
+        "physics": {"carrier_mass_kg": 0.350, "buffer_spring_rate_n_per_m": 3000, "gas_impulse_duration_ms": 0.0,
+                    "carrier_peak_velocity_m_per_s": 4.5, "bolt_carrier_mass_kg": 0.350},
+        "part_name_aliases": {"Bolt Carrier": ["*carrier*", "*bolt*"], "Bolt Head": ["*bolt*head*"],
+                              "Receiver": ["*receiver*", "*body*"], "Trigger": ["*trigger*"],
+                              "Magazine": ["*mag*"], "Cocking Handle": ["*charging*", "*cocking*"]},
+    },
+    "m1911_short_recoil": {
+        "schema_version": "1.0",
+        "operating_system": "m1911_short_recoil_link",
+        "display_name": "M1911 Short Recoil (Barrel Link)",
+        "description": "Browning barrel-link short recoil with exposed hammer",
+        "fire_modes": ["semi"],
+        "cyclic_rate_rpm": {"semi": None},
+        "bones": [
+            {"name": "Frame", "parent": None, "presence": "required", "movement_type": "static",
+             "description": "Steel frame - root bone",
+             "placement": "Place at frame below barrel, at slide stop pin"},
+            {"name": "Slide", "parent": "Frame", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.077, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"carrier_travel_m": 0.077, "carrier_mass_kg": 0.280, "buffer_spring_rate_n_per_m": 2600},
+             "description": "Slide travels ~77mm rearward",
+             "placement": "Place at rear of slide"},
+            {"name": "Barrel", "parent": "Slide", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -0.087, "max_x": 0.0, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 5.0},
+             "description": "Barrel tilts ~5 degrees via barrel link. Steeper than Glock cam-lug",
+             "placement": "Place at barrel chamber end"},
+            {"name": "Barrel Link", "parent": "Barrel", "presence": "optional", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -0.524, "max_x": 0.0, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 30.0},
+             "description": "Swinging arm link (~12mm). Pulls barrel breech down as slide recoils",
+             "placement": "Place at barrel link pin under barrel lug"},
+            {"name": "Hammer", "parent": "Frame", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -1.047, "max_x": 0.0, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 60.0},
+             "description": "Exposed hammer. Rotates ~60 degrees forward to strike firing pin",
+             "placement": "Place at hammer pin in frame"},
+            {"name": "Trigger", "parent": "Frame", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.0, "use_min_x": True, "use_max_x": True,
+                              "min_y": -0.006, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "description": "Trigger slides straight back ~6mm. Pivoting stirrup releases sear",
+             "placement": "Place at trigger bow in frame"},
+            {"name": "Grip Safety", "parent": "Frame", "presence": "expected", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -0.122, "max_x": 0.0, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 7.0},
+             "description": "Backstrap lever. Must be squeezed ~7 degrees to allow trigger movement",
+             "placement": "Place at grip safety pivot at rear of frame"},
+            {"name": "Thumb Safety", "parent": "Frame", "presence": "expected", "movement_type": "rotate", "axis": "Z",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_z": 0.0, "max_z": 0.785, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 45.0},
+             "description": "Left-side thumb safety. Up=safe (locks sear), down=fire",
+             "placement": "Place at thumb safety pivot on left side of frame"},
+            {"name": "Slide Stop", "parent": "Frame", "presence": "expected", "movement_type": "rotate", "axis": "X",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0.0, "max_x": 0.175, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "description": "Holds slide open. Also serves as barrel link pivot pin",
+             "placement": "Place at slide stop pin on left side of frame"},
+            {"name": "Magazine", "parent": None, "presence": "required", "movement_type": "translate", "axis": "Z",
+             "description": "Single-stack 7-round magazine",
+             "placement": "Place at top of magazine"},
+            {"name": "Magazine Release", "parent": "Frame", "presence": "expected", "movement_type": "translate", "axis": "X",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": 0.0, "max_x": 0.003, "use_min_x": True, "use_max_x": True,
+                              "min_y": 0.0, "max_y": 0.0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0.0, "max_z": 0.0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "description": "Button behind trigger guard",
+             "placement": "Place at magazine release button"},
+        ],
+        "physics": {"carrier_mass_kg": 0.280, "buffer_spring_rate_n_per_m": 2600, "gas_impulse_duration_ms": 0.8,
+                    "carrier_peak_velocity_m_per_s": 6.5, "bolt_carrier_mass_kg": 0.280},
+        "part_name_aliases": {"Slide": ["*slide*"], "Barrel": ["*barrel*"], "Frame": ["*frame*", "*receiver*"],
+                              "Trigger": ["*trigger*"], "Hammer": ["*hammer*"], "Magazine": ["*mag*"]},
     },
 }
 
@@ -1468,11 +1717,37 @@ class WEAPONRIG_PT_main(bpy.types.Panel):
             box = layout.box()
             box.label(text="All bones added!", icon="CHECKMARK")
 
-        # Weight assignment button (show when bones exist)
+        # Mesh tools (show when bones exist)
         if added:
             box = layout.box()
-            box.label(text="Mesh Assignment", icon="MOD_VERTEX_WEIGHT")
+            box.label(text="Mesh Tools", icon="MOD_VERTEX_WEIGHT")
             box.operator("weaponrig.assign_weights", text="Assign Mesh to Bones", icon="BONE_DATA")
+            box.operator("weaponrig.segment_mesh", text="Segment Fused Mesh", icon="MOD_EXPLODE")
+
+        # Animation section
+        if added:
+            box = layout.box()
+            box.label(text="Animation", icon="ACTION")
+            box.operator("weaponrig.generate_cycle", text="Generate Firing Cycle", icon="PHYSICS")
+            row = box.row(align=True)
+            op = row.operator("weaponrig.generate_recoil", text="Recoil: Rifle", icon="FORCE_HARMONIC")
+            op.preset = "rifle"
+            op = row.operator("weaponrig.generate_recoil", text="Pistol")
+            op.preset = "pistol"
+            box.operator("weaponrig.generate_fire_modes", text="Generate All Fire Modes (NLA)", icon="NLA")
+            box.operator("weaponrig.play_cycle", text="Play Animation", icon="PLAY")
+
+        # Export section
+        if added:
+            box = layout.box()
+            box.label(text="Export", icon="EXPORT")
+            row = box.row(align=True)
+            op = row.operator("weaponrig.export_fbx", text="UE5")
+            op.engine = "UE5"
+            op = row.operator("weaponrig.export_fbx", text="Unity")
+            op.engine = "Unity"
+            op = row.operator("weaponrig.export_fbx", text="Godot")
+            op.engine = "Godot"
 
 
 class WEAPONRIG_PT_cycle(bpy.types.Panel):
@@ -1507,6 +1782,12 @@ _classes = (
     WEAPONRIG_OT_auto_detect,
     WEAPONRIG_OT_assign_weights,
     WEAPONRIG_OT_import_mesh,
+    WEAPONRIG_OT_generate_cycle,
+    WEAPONRIG_OT_generate_recoil,
+    WEAPONRIG_OT_generate_fire_modes,
+    WEAPONRIG_OT_segment_mesh,
+    WEAPONRIG_OT_export_fbx,
+    WEAPONRIG_OT_play_cycle,
     WEAPONRIG_PT_main,
     WEAPONRIG_PT_cycle,
 )
@@ -1546,6 +1827,660 @@ def unregister():
     del bpy.types.Scene.weaponrig_weapon_type
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)
+
+
+# ===================================================================
+# PHYSICS FIRING CYCLE SIMULATOR (v0.4)
+# ===================================================================
+
+def _simulate_carrier_cycle(params, fps=60):
+    """Spring-mass simulation of bolt carrier cycle. Returns {frame: position_m}."""
+    mass = params.get("carrier_mass_kg", 0.3)
+    spring_k = params.get("buffer_spring_rate_n_per_m", 3500)
+    travel = params.get("carrier_travel_m", 0.095)
+    peak_vel = params.get("carrier_peak_velocity_m_per_s", 5.8)
+    gas_dur = params.get("gas_impulse_duration_ms", 1.2) / 1000.0
+
+    dt = 0.00005  # 50 microsecond timestep for accuracy
+    restitution = 0.3  # buffer impact bounce coefficient
+
+    # Calculate gas force from peak velocity and impulse duration
+    gas_force = (mass * peak_vel) / gas_dur if gas_dur > 0 else mass * peak_vel / 0.001
+
+    x = 0.0  # position (negative = rearward)
+    v = 0.0  # velocity
+    t = 0.0
+
+    # Determine total sim duration from cyclic rate or default
+    rpm = params.get("cyclic_rate_rpm", 700)
+    if rpm and rpm > 0:
+        cycle_time = 60.0 / rpm
+    else:
+        cycle_time = 0.1  # 100ms for semi-auto
+
+    num_frames = int(cycle_time * fps) + 1
+    frame_dt = 1.0 / fps
+    results = {}
+    frame_idx = 0
+    next_frame_time = 0.0
+    phase = "gas"  # gas -> decel -> bounce -> return -> lockup
+
+    while t < cycle_time and frame_idx < num_frames + 10:
+        # Record frame data
+        if t >= next_frame_time:
+            results[frame_idx] = max(-travel, min(0.0, x))
+            frame_idx += 1
+            next_frame_time = frame_idx * frame_dt
+
+        # Forces
+        f_total = 0.0
+
+        # Gas impulse (rearward)
+        if t < gas_dur and phase == "gas":
+            f_total -= gas_force
+
+        # Spring force (resists rearward, pushes forward)
+        if x < 0:
+            f_total -= spring_k * x  # x is negative, so this pushes forward (positive)
+
+        # Buffer stop
+        if x <= -travel:
+            x = -travel
+            if v < 0:
+                v = -v * restitution  # bounce
+                phase = "return"
+
+        # Forward stop (battery)
+        if x >= 0 and v > 0 and phase == "return":
+            x = 0.0
+            v = 0.0
+            phase = "lockup"
+
+        if phase != "lockup":
+            a = f_total / mass
+            v += a * dt
+            x += v * dt
+
+        if phase == "gas" and t >= gas_dur:
+            phase = "decel"
+
+        t += dt
+
+    # Fill remaining frames
+    while frame_idx < num_frames:
+        results[frame_idx] = 0.0
+        frame_idx += 1
+
+    return results
+
+
+def _bake_cycle_to_action(armature, config, fps=60):
+    """Simulate firing cycle and bake to a Blender Action. Returns the Action."""
+    physics = config.physics
+    if not physics:
+        return None
+
+    rpm = config.cyclic_rate_rpm.get("auto") or config.cyclic_rate_rpm.get("semi") or 700
+    physics_params = dict(physics)
+    physics_params["cyclic_rate_rpm"] = rpm
+
+    carrier_positions = _simulate_carrier_cycle(physics_params, fps)
+    if not carrier_positions:
+        return None
+
+    # Find the carrier bone
+    carrier_bone = None
+    for bd in config.bones:
+        if bd.movement_type == "translate" and bd.constraints:
+            for c in bd.constraints:
+                if c.type == "LIMIT_LOCATION":
+                    carrier_bone = bd
+                    break
+            if carrier_bone:
+                break
+
+    if not carrier_bone:
+        return None
+
+    arm = armature
+    if arm.animation_data is None:
+        arm.animation_data_create()
+
+    action_name = f"FiringCycle_{config.display_name}"
+    action = bpy.data.actions.new(name=action_name)
+
+    axis_idx = _AXIS_INDEX.get(carrier_bone.axis.lower(), 1) if carrier_bone.axis else 1
+    data_path = f'pose.bones["{carrier_bone.name}"].location'
+    fcu = action.fcurves.new(data_path=data_path, index=axis_idx)
+    fcu.keyframe_points.add(len(carrier_positions))
+    for i, (frame, pos) in enumerate(sorted(carrier_positions.items())):
+        fcu.keyframe_points[i].co = (frame + 1, pos)  # Blender frames start at 1
+        fcu.keyframe_points[i].interpolation = "BEZIER"
+    fcu.update()
+
+    # Drive dependent bones (rotation bones with drivers linked to carrier)
+    for bd in config.bones:
+        if not bd.drivers:
+            continue
+        for ddef in bd.drivers:
+            if ddef.driver_bone != carrier_bone.name:
+                continue
+            d_path, d_idx = _parse_prop(ddef.driven_property)
+            dfcu = action.fcurves.new(
+                data_path=f'pose.bones["{bd.name}"].{d_path}', index=d_idx
+            )
+            dfcu.keyframe_points.add(len(carrier_positions))
+            for i, (frame, carrier_pos) in enumerate(sorted(carrier_positions.items())):
+                var = carrier_pos
+                if ddef.cam_curve_keyframes:
+                    travel = bd.parameters.get("carrier_travel_m", carrier_bone.parameters.get("carrier_travel_m", 1.0))
+                    rot_rad = math.radians(bd.parameters.get("rotation_degrees", 1.0))
+                    sorted_kfs = sorted(ddef.cam_curve_keyframes, key=lambda k: k.carrier_travel_pct)
+                    pct = abs(var) / travel if travel > 0 else 0
+                    val = 0.0
+                    for ki in range(len(sorted_kfs) - 1):
+                        if sorted_kfs[ki].carrier_travel_pct <= pct <= sorted_kfs[ki + 1].carrier_travel_pct:
+                            seg_len = sorted_kfs[ki + 1].carrier_travel_pct - sorted_kfs[ki].carrier_travel_pct
+                            if seg_len > 0:
+                                t = (pct - sorted_kfs[ki].carrier_travel_pct) / seg_len
+                            else:
+                                t = 0
+                            val = (sorted_kfs[ki].bolt_rotation_pct + t * (sorted_kfs[ki + 1].bolt_rotation_pct - sorted_kfs[ki].bolt_rotation_pct)) * rot_rad
+                            break
+                    else:
+                        if sorted_kfs:
+                            val = sorted_kfs[-1].bolt_rotation_pct * rot_rad
+                else:
+                    try:
+                        val = eval(ddef.expression or "var", {"var": var, "abs": abs, "math": math})
+                    except Exception:
+                        val = 0.0
+                dfcu.keyframe_points[i].co = (frame + 1, val)
+                dfcu.keyframe_points[i].interpolation = "BEZIER"
+            dfcu.update()
+
+    return action
+
+
+# ===================================================================
+# SPRING-DAMPER RECOIL GENERATOR (v0.4)
+# ===================================================================
+
+def _halflife_to_damping(halflife):
+    return (4.0 * 0.69314718056) / max(halflife, 1e-5)
+
+
+def _decay_spring(x, v, halflife, dt):
+    """Critically-damped spring decay toward zero."""
+    y = _halflife_to_damping(halflife) / 2.0
+    j1 = v + x * y
+    eydt = math.exp(-y * dt)
+    new_x = eydt * (x + j1 * dt)
+    new_v = eydt * (v - j1 * y * dt)
+    return new_x, new_v
+
+
+_RECOIL_PRESETS = {
+    "rifle": {"kick_back": 0.02, "kick_up_deg": 3.0, "kick_side_deg": 1.0, "recovery_halflife": 0.15},
+    "pistol": {"kick_back": 0.01, "kick_up_deg": 5.0, "kick_side_deg": 2.0, "recovery_halflife": 0.12},
+    "smg": {"kick_back": 0.015, "kick_up_deg": 2.0, "kick_side_deg": 1.5, "recovery_halflife": 0.10},
+    "shotgun": {"kick_back": 0.04, "kick_up_deg": 8.0, "kick_side_deg": 3.0, "recovery_halflife": 0.25},
+}
+
+
+def _generate_recoil_action(armature, root_bone_name, preset_name="rifle", fps=60):
+    """Generate a recoil animation using critically-damped spring physics."""
+    preset = _RECOIL_PRESETS.get(preset_name, _RECOIL_PRESETS["rifle"])
+    dt = 1.0 / fps
+    num_frames = int(0.4 * fps)  # 400ms
+
+    channels = {
+        ("location", 1): -preset["kick_back"],        # Y backward kick
+        ("rotation_euler", 0): math.radians(preset["kick_up_deg"]),   # X muzzle rise
+        ("rotation_euler", 2): math.radians(preset["kick_side_deg"]) * (1 if hash(root_bone_name) % 2 == 0 else -1),
+    }
+
+    arm = armature
+    if arm.animation_data is None:
+        arm.animation_data_create()
+
+    action = bpy.data.actions.new(name=f"Recoil_{preset_name}")
+
+    for (prop, idx), initial in channels.items():
+        data_path = f'pose.bones["{root_bone_name}"].{prop}'
+        fcu = action.fcurves.new(data_path=data_path, index=idx)
+        fcu.keyframe_points.add(num_frames)
+
+        x, v = initial, 0.0
+        for frame in range(num_frames):
+            if frame == 0:
+                x = initial
+                v = -initial * 20  # sharp kick
+            x, v = _decay_spring(x, v, preset["recovery_halflife"], dt)
+            fcu.keyframe_points[frame].co = (frame + 1, x)
+            fcu.keyframe_points[frame].interpolation = "BEZIER"
+        fcu.update()
+
+    return action
+
+
+# ===================================================================
+# NLA FIRE MODE ACTIONS (v0.4)
+# ===================================================================
+
+def _create_fire_mode_actions(armature, cycle_action, recoil_action, config, fps=60):
+    """Generate NLA tracks for semi, auto, burst from base actions."""
+    if armature.animation_data is None:
+        armature.animation_data_create()
+
+    actions = {}
+
+    # Semi = single cycle + recoil
+    if cycle_action:
+        semi = cycle_action.copy()
+        semi.name = f"Fire_Semi_{config.display_name}"
+        actions["semi"] = semi
+
+    # Auto = repeated cycles
+    auto_rpm = config.cyclic_rate_rpm.get("auto")
+    if auto_rpm and cycle_action:
+        frames_per_shot = max(1, int(fps * 60.0 / auto_rpm))
+        burst_count = 10
+        auto_action = bpy.data.actions.new(name=f"Fire_Auto_{config.display_name}")
+
+        for fcu_src in cycle_action.fcurves:
+            fcu = auto_action.fcurves.new(data_path=fcu_src.data_path, index=fcu_src.array_index)
+            kf_data = []
+            for shot in range(burst_count):
+                offset = shot * frames_per_shot
+                for kp in fcu_src.keyframe_points:
+                    kf_data.append((kp.co[0] + offset, kp.co[1]))
+            fcu.keyframe_points.add(len(kf_data))
+            for i, (f, v) in enumerate(kf_data):
+                fcu.keyframe_points[i].co = (f, v)
+            fcu.update()
+        actions["auto"] = auto_action
+
+    # 3-round burst
+    burst_rpm = config.cyclic_rate_rpm.get("burst_3")
+    if burst_rpm and cycle_action:
+        frames_per_shot = max(1, int(fps * 60.0 / burst_rpm))
+        burst_action = bpy.data.actions.new(name=f"Fire_Burst3_{config.display_name}")
+
+        for fcu_src in cycle_action.fcurves:
+            fcu = burst_action.fcurves.new(data_path=fcu_src.data_path, index=fcu_src.array_index)
+            kf_data = []
+            for shot in range(3):
+                offset = shot * frames_per_shot
+                for kp in fcu_src.keyframe_points:
+                    kf_data.append((kp.co[0] + offset, kp.co[1]))
+            fcu.keyframe_points.add(len(kf_data))
+            for i, (f, v) in enumerate(kf_data):
+                fcu.keyframe_points[i].co = (f, v)
+            fcu.update()
+        actions["burst_3"] = burst_action
+
+    # Push all to NLA tracks
+    anim_data = armature.animation_data
+    for mode_name, action in actions.items():
+        track = anim_data.nla_tracks.new()
+        track.name = f"FireMode_{mode_name}"
+        track.strips.new(name=action.name, start=0, action=action)
+
+    anim_data.action = None  # clear active so NLA takes over
+    return actions
+
+
+# ===================================================================
+# MESH SEGMENTATION (v0.4) — no ML required
+# ===================================================================
+
+def _separate_loose_parts(obj):
+    """Separate mesh into disconnected islands. Returns list of new objects."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+
+    visited = set()
+    islands = []
+    for v in bm.verts:
+        if v.index in visited:
+            continue
+        island = set()
+        stack = [v]
+        while stack:
+            vert = stack.pop()
+            if vert.index in visited:
+                continue
+            visited.add(vert.index)
+            island.add(vert.index)
+            for edge in vert.link_edges:
+                other = edge.other_vert(vert)
+                if other.index not in visited:
+                    stack.append(other)
+        islands.append(island)
+    bm.free()
+    return islands
+
+
+def _segment_by_dihedral(obj, angle_threshold_deg=45.0):
+    """Segment fused mesh at sharp edges using region growing. Returns list of face index sets."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.faces.ensure_lookup_table()
+
+    threshold = math.radians(angle_threshold_deg)
+    visited = set()
+    regions = []
+
+    for face in bm.faces:
+        if face.index in visited:
+            continue
+        region = set()
+        stack = [face]
+        while stack:
+            f = stack.pop()
+            if f.index in visited:
+                continue
+            visited.add(f.index)
+            region.add(f.index)
+            for edge in f.edges:
+                for neighbor in edge.link_faces:
+                    if neighbor.index != f.index and neighbor.index not in visited:
+                        angle = f.normal.angle(neighbor.normal, 0.0)
+                        if angle < threshold:
+                            stack.append(neighbor)
+        if len(region) > 0:
+            regions.append(region)
+    bm.free()
+    return regions
+
+
+# ===================================================================
+# FBX EXPORT PRESETS (v0.4)
+# ===================================================================
+
+_FBX_PRESETS = {
+    "UE5": {
+        "apply_scale_options": "FBX_SCALE_UNITS",
+        "axis_forward": "-Z", "axis_up": "Y",
+        "add_leaf_bones": False,
+        "primary_bone_axis": "Y", "secondary_bone_axis": "X",
+        "use_mesh_modifiers": True, "use_armature_deform_only": True,
+        "bake_anim": True, "bake_anim_simplify_factor": 0.0,
+        "object_types": {"ARMATURE", "MESH"}, "global_scale": 1.0,
+        "mesh_smooth_type": "FACE",
+    },
+    "Unity": {
+        "apply_scale_options": "FBX_SCALE_ALL",
+        "axis_forward": "-Z", "axis_up": "Y",
+        "add_leaf_bones": False,
+        "primary_bone_axis": "Y", "secondary_bone_axis": "X",
+        "use_mesh_modifiers": True, "use_armature_deform_only": True,
+        "bake_anim": True, "bake_anim_simplify_factor": 1.0,
+        "object_types": {"ARMATURE", "MESH"}, "global_scale": 1.0,
+        "mesh_smooth_type": "FACE",
+    },
+    "Godot": {
+        "apply_scale_options": "FBX_SCALE_NONE",
+        "axis_forward": "-Z", "axis_up": "Y",
+        "add_leaf_bones": False,
+        "primary_bone_axis": "Y", "secondary_bone_axis": "X",
+        "use_mesh_modifiers": True, "bake_anim": True,
+        "object_types": {"ARMATURE", "MESH"}, "global_scale": 1.0,
+        "mesh_smooth_type": "FACE",
+    },
+}
+
+
+# ===================================================================
+# v0.4 OPERATORS
+# ===================================================================
+
+class WEAPONRIG_OT_generate_cycle(bpy.types.Operator):
+    """Generate physics-based firing cycle animation from weapon specs"""
+    bl_idname = "weaponrig.generate_cycle"
+    bl_label = "Generate Firing Cycle"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if arm_obj is None:
+            self.report({"ERROR"}, "No WeaponRig armature found")
+            return {"CANCELLED"}
+
+        weapon_type = context.scene.weaponrig_weapon_type
+        if weapon_type not in WEAPON_CONFIGS:
+            self.report({"ERROR"}, "No config loaded")
+            return {"CANCELLED"}
+
+        config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
+        action = _bake_cycle_to_action(arm_obj, config)
+        if action is None:
+            self.report({"ERROR"}, "Could not generate cycle — check physics config")
+            return {"CANCELLED"}
+
+        arm_obj.animation_data.action = action
+        start, end = action.frame_range
+        context.scene.frame_start = int(start)
+        context.scene.frame_end = int(end)
+        context.scene.frame_current = int(start)
+
+        self.report({"INFO"}, f"Generated firing cycle: {int(end - start + 1)} frames")
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_generate_recoil(bpy.types.Operator):
+    """Generate spring-damper recoil animation"""
+    bl_idname = "weaponrig.generate_recoil"
+    bl_label = "Generate Recoil"
+    bl_options = {"REGISTER", "UNDO"}
+
+    preset: bpy.props.EnumProperty(
+        name="Weapon Class",
+        items=[("rifle", "Rifle", ""), ("pistol", "Pistol", ""), ("smg", "SMG", ""), ("shotgun", "Shotgun", "")],
+        default="rifle",
+    )
+
+    def execute(self, context):
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if arm_obj is None:
+            self.report({"ERROR"}, "No WeaponRig armature found")
+            return {"CANCELLED"}
+
+        # Find root bone
+        root_name = None
+        added = _get_added_list(context)
+        weapon_type = context.scene.weaponrig_weapon_type
+        if weapon_type in WEAPON_CONFIGS:
+            config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
+            for bd in config.bones:
+                if bd.parent is None and bd.name in added:
+                    root_name = bd.name
+                    break
+        if root_name is None and arm_obj.pose.bones:
+            root_name = arm_obj.pose.bones[0].name
+
+        if root_name is None:
+            self.report({"ERROR"}, "No root bone found")
+            return {"CANCELLED"}
+
+        action = _generate_recoil_action(arm_obj, root_name, self.preset)
+        arm_obj.animation_data.action = action
+        start, end = action.frame_range
+        context.scene.frame_start = int(start)
+        context.scene.frame_end = int(end)
+
+        self.report({"INFO"}, f"Generated {self.preset} recoil: {int(end - start + 1)} frames")
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_generate_fire_modes(bpy.types.Operator):
+    """Generate NLA actions for all fire modes (semi, auto, burst)"""
+    bl_idname = "weaponrig.generate_fire_modes"
+    bl_label = "Generate All Fire Modes"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if arm_obj is None:
+            self.report({"ERROR"}, "No WeaponRig armature found")
+            return {"CANCELLED"}
+
+        weapon_type = context.scene.weaponrig_weapon_type
+        if weapon_type not in WEAPON_CONFIGS:
+            self.report({"ERROR"}, "No config loaded")
+            return {"CANCELLED"}
+
+        config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
+
+        # Generate base cycle
+        cycle_action = _bake_cycle_to_action(arm_obj, config)
+
+        # Generate base recoil
+        root_name = None
+        for bd in config.bones:
+            if bd.parent is None:
+                root_name = bd.name
+                break
+        recoil_action = _generate_recoil_action(arm_obj, root_name or "Weapon Root") if root_name else None
+
+        actions = _create_fire_mode_actions(arm_obj, cycle_action, recoil_action, config)
+        self.report({"INFO"}, f"Generated {len(actions)} fire mode actions as NLA tracks")
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_segment_mesh(bpy.types.Operator):
+    """Separate fused mesh into parts using edge angle detection"""
+    bl_idname = "weaponrig.segment_mesh"
+    bl_label = "Segment Mesh"
+    bl_options = {"REGISTER", "UNDO"}
+
+    angle_threshold: bpy.props.FloatProperty(
+        name="Angle Threshold", default=45.0, min=10.0, max=90.0,
+        description="Split at edges sharper than this angle (degrees)",
+    )
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != "MESH":
+            self.report({"ERROR"}, "Select a mesh object")
+            return {"CANCELLED"}
+
+        # First check for loose parts
+        islands = _separate_loose_parts(obj)
+        if len(islands) > 1:
+            # Use Blender's built-in separate by loose parts
+            context.view_layer.objects.active = obj
+            obj.select_set(True)
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.select_all(action="SELECT")
+            bpy.ops.mesh.separate(type="LOOSE")
+            bpy.ops.object.mode_set(mode="OBJECT")
+            new_count = len([o for o in context.selected_objects if o.type == "MESH"])
+            self.report({"INFO"}, f"Separated into {new_count} loose parts")
+            return {"FINISHED"}
+
+        # If single mesh, try dihedral angle segmentation
+        regions = _segment_by_dihedral(obj, self.angle_threshold)
+        if len(regions) <= 1:
+            self.report({"WARNING"}, "Could not segment — mesh appears to be one continuous surface. Try lowering the angle threshold")
+            return {"CANCELLED"}
+
+        # Separate regions into objects using vertex groups then separate
+        import bmesh
+        context.view_layer.objects.active = obj
+        obj.select_set(True)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
+
+        # Create vertex groups per region
+        for i, face_indices in enumerate(regions):
+            vg = obj.vertex_groups.new(name=f"Part_{i:03d}")
+            vert_indices = set()
+            for fi in face_indices:
+                if fi < len(bm.faces):
+                    for v in bm.faces[fi].verts:
+                        vert_indices.add(v.index)
+            bpy.ops.mesh.select_all(action="DESELECT")
+            bm.verts.ensure_lookup_table()
+            for vi in vert_indices:
+                bm.verts[vi].select = True
+            bmesh.update_edit_mesh(obj.data)
+            bpy.ops.object.vertex_group_assign()
+
+        bpy.ops.object.mode_set(mode="OBJECT")
+        self.report({"INFO"}, f"Found {len(regions)} regions as vertex groups. Select groups and separate manually (P key) for best results")
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_export_fbx(bpy.types.Operator):
+    """Export weapon rig as FBX with game engine presets"""
+    bl_idname = "weaponrig.export_fbx"
+    bl_label = "Export FBX"
+    bl_options = {"REGISTER"}
+
+    engine: bpy.props.EnumProperty(
+        name="Engine",
+        items=[("UE5", "Unreal Engine 5", ""), ("Unity", "Unity", ""), ("Godot", "Godot", "")],
+        default="UE5",
+    )
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
+
+    def execute(self, context):
+        preset = _FBX_PRESETS.get(self.engine, _FBX_PRESETS["UE5"])
+
+        try:
+            bpy.ops.export_scene.fbx(filepath=self.filepath, **preset)
+        except Exception as e:
+            self.report({"ERROR"}, f"Export failed: {e}")
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, f"Exported for {self.engine}: {Path(self.filepath).name}")
+        return {"FINISHED"}
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+
+class WEAPONRIG_OT_play_cycle(bpy.types.Operator):
+    """Play firing cycle animation in viewport"""
+    bl_idname = "weaponrig.play_cycle"
+    bl_label = "Play Cycle"
+
+    def execute(self, context):
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if arm_obj is None or arm_obj.animation_data is None or arm_obj.animation_data.action is None:
+            self.report({"WARNING"}, "No animation to play. Generate a firing cycle first")
+            return {"CANCELLED"}
+
+        action = arm_obj.animation_data.action
+        start, end = action.frame_range
+        context.scene.frame_start = int(start)
+        context.scene.frame_end = int(end)
+        context.scene.frame_current = int(start)
+        bpy.ops.screen.animation_play()
+        return {"FINISHED"}
 
 
 if __name__ == "__main__":
