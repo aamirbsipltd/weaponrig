@@ -1758,6 +1758,26 @@ def _get_world_center(mesh_obj):
     return sum((mat @ Vector(c) for c in bb), Vector()) / 8
 
 
+def _sanitize_bone_name(name):
+    """P.8: Make bone name safe for data paths and FBX export."""
+    safe = name.replace(".", "_").replace("-", "_").replace(" ", "_")
+    safe = safe.replace("(", "").replace(")", "").replace("[", "").replace("]", "")
+    while "__" in safe:
+        safe = safe.replace("__", "_")
+    return safe.strip("_")
+
+
+def _audit_modifiers(mesh_obj):
+    """P.3: Check modifier stack for known issues."""
+    warnings = []
+    for mod in mesh_obj.modifiers:
+        if mod.type == "EDGE_SPLIT":
+            warnings.append(f"{mesh_obj.name}: Edge Split may create duplicate verts")
+        if mod.type == "MIRROR":
+            warnings.append(f"{mesh_obj.name}: Mirror may interfere with binding")
+    return warnings
+
+
 def _find_mesh_for_bone_definitive(bone_name, mesh_objects, aliases=None):
     """Match bone name to mesh object by name, contains, or alias."""
     bone_lower = bone_name.lower()
@@ -1804,7 +1824,16 @@ def build_weapon_rig(context, config_bones, mesh_objects, part_aliases=None):
         bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="BOUNDS")
         if obj.data.shape_keys:
             obj.shape_key_clear()
+        # P.3: Audit modifier stack
+        issues.extend(_audit_modifiers(obj))
         obj.select_set(False)
+
+    # P.8: Sanitize bone names
+    for bdef in config_bones:
+        clean = _sanitize_bone_name(bdef["name"])
+        if clean != bdef["name"]:
+            issues.append(f"Bone '{bdef['name']}' sanitized to '{clean}'")
+            bdef["name"] = clean
 
     # Compute positions BEFORE edit mode
     bone_positions = {}
