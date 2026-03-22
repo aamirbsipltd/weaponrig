@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 16, 0),
+    "version": (0, 17, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -1126,6 +1126,10 @@ def _orient_bone(eb, bone_def):
 
     eb.tail = eb.head + direction.normalized() * 0.05
 
+    # T7: Enforce minimum bone length (zero-length bones are silently deleted)
+    if (eb.tail - eb.head).length < 0.005:
+        eb.tail = eb.head + Vector((0, 0.005, 0))
+
     bone_dir = (eb.tail - eb.head).normalized()
     up = Vector((0, 0, 1))
     if abs(bone_dir.dot(up)) > 0.95:
@@ -1185,7 +1189,10 @@ def add_single_bone(config, bone_name, armature_obj, position, context):
 
     # Apply naming convention
     display_name = _format_bone_name(bone_def.name, context.scene.get("weaponrig_naming", "TITLE"))
-    eb = armature_obj.data.edit_bones.new(display_name)
+    # T2: Reuse existing bone to prevent name auto-increment (bolt → bolt.001)
+    eb = armature_obj.data.edit_bones.get(display_name)
+    if eb is None:
+        eb = armature_obj.data.edit_bones.new(display_name)
     eb.head = position.copy()
 
     # Orient bone based on movement type (critical for LOCAL-space constraints)
@@ -1767,6 +1774,16 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
 
         if context.object and context.object.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
+
+        # T11: Set mesh origins to geometry center so bone position matches
+        # deformation pivot (without this, mesh orbits around wrong point)
+        for mesh_obj in mesh_matches.values():
+            bpy.ops.object.select_all(action="DESELECT")
+            mesh_obj.select_set(True)
+            context.view_layer.objects.active = mesh_obj
+            bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="BOUNDS")
+
+        bpy.ops.object.select_all(action="DESELECT")
         context.view_layer.objects.active = arm_obj
         arm_obj.select_set(True)
 
@@ -1863,7 +1880,15 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
 
 def _bind_mesh_to_bone(mesh_obj, armature_obj, bone_name):
     """Bind all vertices of mesh_obj to bone_name with weight 1.0."""
-    # Create/replace vertex group
+    # T6: Remove ALL existing vertex groups first (prevents weight normalization
+    # from pre-existing groups like bevel_weights diluting bone influence)
+    bone_names = {b.name for b in armature_obj.data.bones} if armature_obj.data.bones else set()
+    to_remove = [vg.name for vg in mesh_obj.vertex_groups if vg.name not in bone_names]
+    for vg_name in to_remove:
+        vg = mesh_obj.vertex_groups.get(vg_name)
+        if vg:
+            mesh_obj.vertex_groups.remove(vg)
+    # Remove matching bone vertex group if it exists (clean rebind)
     existing_vg = mesh_obj.vertex_groups.get(bone_name)
     if existing_vg:
         mesh_obj.vertex_groups.remove(existing_vg)
