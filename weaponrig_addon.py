@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 19, 0),
+    "version": (0, 20, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -1745,10 +1745,291 @@ class WEAPONRIG_OT_select_bone(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# ===================================================================
+# DEFINITIVE BUILD FUNCTION (v0.20 — handles every known failure mode)
+# ===================================================================
+
+def _get_world_center(mesh_obj):
+    """World-space bounding box center. bound_box is LOCAL space — must transform."""
+    if mesh_obj is None or mesh_obj.type != "MESH":
+        return Vector((0, 0, 0))
+    bb = mesh_obj.bound_box
+    mat = mesh_obj.matrix_world
+    return sum((mat @ Vector(c) for c in bb), Vector()) / 8
+
+
+def _find_mesh_for_bone_definitive(bone_name, mesh_objects, aliases=None):
+    """Match bone name to mesh object by name, contains, or alias."""
+    bone_lower = bone_name.lower()
+    for obj in mesh_objects:
+        if obj.name.lower() == bone_lower:
+            return obj
+    for obj in mesh_objects:
+        if bone_lower in obj.name.lower() or obj.name.lower() in bone_lower:
+            return obj
+    if aliases:
+        for alias in aliases:
+            al = alias.lower()
+            for obj in mesh_objects:
+                if al in obj.name.lower() or obj.name.lower() in al:
+                    return obj
+    return None
+
+
+def build_weapon_rig(context, config_bones, mesh_objects, part_aliases=None):
+    """
+    Build a complete weapon rig. Handles:
+    1. Bones positioned ON mesh (not at origin)
+    2. Drivers that evaluate (FModifier removed, variables set)
+    3. Constraints in radians with axes enabled
+
+    Args:
+        context: bpy.context
+        config_bones: list of bone defs (name, parent, movement_type, axis,
+                       constraints, drivers, aliases)
+        mesh_objects: list of mesh Objects
+        part_aliases: dict of {bone_name: [alias_list]}
+    Returns:
+        dict with armature_obj, issues, bound_count, bone_count
+    """
+    issues = []
+    BONE_LENGTH = 0.03
+
+    # PRE-BUILD: fix meshes
+    for obj in mesh_objects:
+        bpy.ops.object.select_all(action="DESELECT")
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+        bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="BOUNDS")
+        if obj.data.shape_keys:
+            obj.shape_key_clear()
+        obj.select_set(False)
+
+    # Compute positions BEFORE edit mode
+    bone_positions = {}
+    bone_mesh_map = {}
+    bone_names_set = {b["name"] for b in config_bones}
+
+    for bdef in config_bones:
+        name = bdef["name"]
+        aliases = bdef.get("aliases", [])
+        if part_aliases and name in part_aliases:
+            aliases = aliases + part_aliases[name]
+        mesh_obj = _find_mesh_for_bone_definitive(name, mesh_objects, aliases)
+        if mesh_obj:
+            center = _get_world_center(mesh_obj)
+            bone_mesh_map[name] = mesh_obj
+            axis = bdef.get("axis", "Y")
+            avecs = {
+                "X": Vector((BONE_LENGTH, 0, 0)), "Y": Vector((0, BONE_LENGTH, 0)),
+                "Z": Vector((0, 0, BONE_LENGTH)), "-X": Vector((-BONE_LENGTH, 0, 0)),
+                "-Y": Vector((0, -BONE_LENGTH, 0)), "-Z": Vector((0, 0, -BONE_LENGTH)),
+            }
+            bone_positions[name] = {"head": center, "tail": center + avecs.get(axis, avecs["Y"])}
+        else:
+            bone_positions[name] = None
+            issues.append(f"No mesh for '{name}'")
+
+    # PHASE 1: ARMATURE + BONES (Edit Mode — ONE entry, ONE exit)
+    arm_data = bpy.data.armatures.new("WeaponRig")
+    armature_obj = bpy.data.objects.new("WeaponRig", arm_data)
+    context.collection.objects.link(armature_obj)
+    armature_obj.location = Vector((0, 0, 0))
+    armature_obj.show_in_front = True
+    arm_data.display_type = "STICK"
+
+    bpy.ops.object.select_all(action="DESELECT")
+    context.view_layer.objects.active = armature_obj
+    armature_obj.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+
+    for bdef in config_bones:
+        name = bdef["name"]
+        eb = arm_data.edit_bones.get(name) or arm_data.edit_bones.new(name)
+        eb.use_deform = True
+        eb.use_envelope_multiply = False
+        pos = bone_positions.get(name)
+        if pos:
+            eb.head = pos["head"]
+            eb.tail = pos["tail"]
+        else:
+            eb.head = Vector((0, 0, 0))
+            eb.tail = Vector((0, BONE_LENGTH, 0))
+        if (eb.tail - eb.head).length < 0.005:
+            eb.tail = eb.head + Vector((0, BONE_LENGTH, 0))
+
+    for bdef in config_bones:
+        pname = bdef.get("parent")
+        if pname and pname in arm_data.edit_bones:
+            arm_data.edit_bones[bdef["name"]].parent = arm_data.edit_bones[pname]
+
+    for bdef in config_bones:
+        eb = arm_data.edit_bones[bdef["name"]]
+        up = Vector(bdef.get("up_vector", (0, 0, 1)))
+        d = (eb.tail - eb.head).normalized()
+        if abs(d.dot(up)) > 0.95:
+            arb = Vector((1, 0, 0)) if abs(d.x) < 0.95 else Vector((0, 1, 0))
+            up = d.cross(arb).normalized()
+        eb.align_roll(up)
+
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    actual = len(armature_obj.data.bones)
+    if actual < len(config_bones):
+        created = {b.name for b in armature_obj.data.bones}
+        missing = {b["name"] for b in config_bones} - created
+        issues.append(f"Missing bones (zero-length?): {missing}")
+
+    # PHASE 2: CONSTRAINTS (Pose Mode)
+    bpy.ops.object.mode_set(mode="POSE")
+    for bdef in config_bones:
+        pb = armature_obj.pose.bones.get(bdef["name"])
+        if not pb:
+            continue
+        pb.rotation_mode = "XYZ"
+        to_rm = [c.name for c in pb.constraints if c.name.startswith("WR_")]
+        for cn in to_rm:
+            c = pb.constraints.get(cn)
+            if c:
+                pb.constraints.remove(c)
+        for cdef in bdef.get("constraints", []):
+            ct = cdef.get("type", "LIMIT_ROTATION")
+            if ct == "LIMIT_ROTATION":
+                con = pb.constraints.new("LIMIT_ROTATION")
+                con.name = f"WR_LimRot_{bdef['name']}"
+                con.owner_space = cdef.get("owner_space", "LOCAL")
+                for ax in ("x", "y", "z"):
+                    mn, mx = f"min_{ax}", f"max_{ax}"
+                    if mn in cdef or mx in cdef:
+                        setattr(con, f"use_limit_{ax}", True)
+                        setattr(con, mn, math.radians(cdef.get(mn, 0)))
+                        setattr(con, mx, math.radians(cdef.get(mx, 0)))
+                con.influence = 1.0
+            elif ct == "LIMIT_LOCATION":
+                con = pb.constraints.new("LIMIT_LOCATION")
+                con.name = f"WR_LimLoc_{bdef['name']}"
+                con.owner_space = cdef.get("owner_space", "LOCAL")
+                for ax in ("x", "y", "z"):
+                    mn, mx = f"min_{ax}", f"max_{ax}"
+                    if mn in cdef or mx in cdef:
+                        setattr(con, f"use_min_{ax}", True)
+                        setattr(con, f"use_max_{ax}", True)
+                        setattr(con, mn, cdef.get(mn, 0))
+                        setattr(con, mx, cdef.get(mx, 0))
+                con.influence = 1.0
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    # PHASE 3: DRIVERS
+    if not armature_obj.animation_data:
+        armature_obj.animation_data_create()
+    for bdef in config_bones:
+        for ddef in bdef.get("drivers", []):
+            name = bdef["name"]
+            pb = armature_obj.pose.bones.get(name)
+            if not pb:
+                continue
+            prop = ddef.get("property", "rotation_euler")
+            aidx = ddef.get("axis_index", 2)
+            src = ddef.get("source_bone")
+            if not src:
+                continue
+            try:
+                pb.driver_remove(prop, aidx)
+            except TypeError:
+                pass
+            dp = f'pose.bones["{name}"].{prop}'
+            fc = armature_obj.driver_add(dp, aidx)
+            if fc is None:
+                issues.append(f"driver_add returned None on {name}")
+                continue
+            while fc.modifiers:
+                fc.modifiers.remove(fc.modifiers[0])
+            drv = fc.driver
+            drv.type = "SCRIPTED"
+            drv.expression = ddef.get("expression", "var")
+            v = drv.variables.new()
+            v.name = "var"
+            v.type = "TRANSFORMS"
+            t = v.targets[0]
+            t.id = armature_obj
+            t.bone_target = src
+            t.transform_type = ddef.get("source_channel", "LOC_Y")
+            t.transform_space = ddef.get("source_space", "LOCAL_SPACE")
+
+    # PHASE 4: BIND MESHES
+    for obj in mesh_objects:
+        stray = [vg.name for vg in obj.vertex_groups if vg.name not in bone_names_set]
+        for vn in stray:
+            vg = obj.vertex_groups.get(vn)
+            if vg:
+                obj.vertex_groups.remove(vg)
+
+    bound = 0
+    for bname, mobj in bone_mesh_map.items():
+        evg = mobj.vertex_groups.get(bname)
+        if evg:
+            mobj.vertex_groups.remove(evg)
+        vg = mobj.vertex_groups.new(name=bname)
+        fv = set()
+        for p in mobj.data.polygons:
+            for vi in p.vertices:
+                fv.add(vi)
+        vg.add(list(fv) if fv else list(range(len(mobj.data.vertices))), 1.0, "REPLACE")
+        am = None
+        for mod in mobj.modifiers:
+            if mod.type == "ARMATURE":
+                am = mod
+                break
+        if not am:
+            am = mobj.modifiers.new(name="WeaponRig", type="ARMATURE")
+        am.object = armature_obj
+        am.use_vertex_groups = True
+        am.use_bone_envelopes = False
+        am.show_viewport = False
+        am.show_viewport = True
+        mobj.data.update()
+        mobj.parent = armature_obj
+        mobj.parent_type = "OBJECT"
+        mobj.matrix_parent_inverse = armature_obj.matrix_world.inverted()
+        bound += 1
+
+    # PHASE 5: FORCE EVALUATION
+    armature_obj.data.update_tag()
+    context.view_layer.update()
+    f = context.scene.frame_current
+    context.scene.frame_set(f + 1)
+    context.scene.frame_set(f)
+
+    # POST-BUILD VERIFY
+    oc = sum(1 for b in armature_obj.data.bones if b.head_local.length < 0.001)
+    if oc > len(armature_obj.data.bones) * 0.5:
+        issues.append(f"{oc}/{len(armature_obj.data.bones)} bones at origin — mesh matching failed")
+    if armature_obj.animation_data:
+        for fc in armature_obj.animation_data.drivers:
+            if fc.modifiers:
+                issues.append(f"Driver {fc.data_path} still has FModifiers")
+            if len(fc.driver.variables) == 0:
+                issues.append(f"Driver {fc.data_path} has no variables")
+    for pb in armature_obj.pose.bones:
+        if pb.rotation_mode == "QUATERNION":
+            issues.append(f"Bone '{pb.name}' in QUATERNION mode")
+        for con in pb.constraints:
+            if con.type == "LIMIT_ROTATION":
+                if not (con.use_limit_x or con.use_limit_y or con.use_limit_z):
+                    issues.append(f"LIMIT_ROTATION on '{pb.name}' — no axes enabled")
+                for attr in ("min_x", "max_x", "min_y", "max_y", "min_z", "max_z"):
+                    if abs(getattr(con, attr, 0)) > 6.29:
+                        issues.append(f"'{pb.name}' {attr}={getattr(con, attr):.1f} — degrees not radians?")
+
+    armature_obj["weaponrig"] = True
+    return {"armature_obj": armature_obj, "issues": issues, "bound_count": bound, "bone_count": len(armature_obj.data.bones)}
+
+
 class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
-    """Add all remaining bones positioned at matched mesh centroids"""
+    """Build complete weapon rig from config with mesh positioning"""
     bl_idname = "weaponrig.add_all_bones"
-    bl_label = "Add All Remaining Bones"
+    bl_label = "Build Weapon Rig"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -1757,175 +2038,95 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
             self.report({"ERROR"}, f"Unknown weapon type: {weapon_type}")
             return {"CANCELLED"}
 
-        config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
-        added = set(_get_added_list(context))
-        skipped = set(_get_skipped_list(context))
-        fallback_pos = context.scene.cursor.location.copy()
+        raw_config = WEAPON_CONFIGS[weapon_type]
+        config_bones = raw_config.get("bones", [])
+        aliases = raw_config.get("part_name_aliases", {})
 
-        bones_to_add = [b for b in config.bones if b.name not in added and b.name not in skipped]
-        if not bones_to_add:
-            self.report({"INFO"}, "All bones already added or skipped")
+        mesh_objects = [o for o in context.selected_objects if o.type == "MESH"]
+        if not mesh_objects:
+            mesh_objects = [o for o in context.scene.objects if o.type == "MESH"]
+        if not mesh_objects:
+            self.report({"ERROR"}, "No mesh objects found. Import or select weapon mesh first.")
             return {"CANCELLED"}
 
-        arm_obj = get_or_create_armature(context)
-        convention = context.scene.get("weaponrig_naming", "TITLE")
+        # Convert config to dict format expected by build_weapon_rig
+        bone_defs = []
+        for b in config_bones:
+            bd = {
+                "name": b.get("name", b["name"]) if isinstance(b, dict) else b.name,
+                "parent": b.get("parent") if isinstance(b, dict) else b.parent,
+                "movement_type": b.get("movement_type", "static") if isinstance(b, dict) else b.movement_type,
+                "axis": b.get("axis", "Y") if isinstance(b, dict) else (b.axis or "Y"),
+                "constraints": [],
+                "drivers": [],
+                "aliases": [],
+            }
+            # Get aliases from config
+            name = bd["name"]
+            if name in aliases:
+                bd["aliases"] = aliases[name] if isinstance(aliases[name], list) else [aliases[name]]
 
-        # Find mesh matches — name matching first, spatial heuristics as fallback
-        mesh_matches = _find_mesh_matches(config)
-        mesh_objects = [o for o in bpy.data.objects if o.type == "MESH"]
-        unmatched_meshes = [o for o in mesh_objects if o not in mesh_matches.values()]
-        if unmatched_meshes:
-            spatial = _spatial_match_parts(config, unmatched_meshes)
-            for bone_name, obj in spatial.items():
-                if bone_name not in mesh_matches:
-                    mesh_matches[bone_name] = obj
+            # Convert constraints
+            raw_cons = b.get("constraints", []) if isinstance(b, dict) else [{"type": c.type} for c in b.constraints]
+            for rc in raw_cons:
+                if isinstance(rc, dict):
+                    bd["constraints"].append(rc)
+                else:
+                    bd["constraints"].append({"type": rc.type, "owner_space": rc.owner_space})
 
-        if context.object and context.object.mode != "OBJECT":
-            bpy.ops.object.mode_set(mode="OBJECT")
+            # Convert drivers
+            raw_drvs = b.get("drivers", []) if isinstance(b, dict) else b.drivers
+            for rd in raw_drvs:
+                if isinstance(rd, dict):
+                    bd["drivers"].append({
+                        "property": rd.get("driven_property", "rotation_euler").split(".")[0],
+                        "axis_index": {"x": 0, "y": 1, "z": 2}.get(rd.get("driven_property", "rotation_euler.z").split(".")[-1], 2),
+                        "source_bone": rd.get("driver_bone", ""),
+                        "source_channel": {"location.x": "LOC_X", "location.y": "LOC_Y", "location.z": "LOC_Z",
+                                          "rotation_euler.x": "ROT_X", "rotation_euler.y": "ROT_Y", "rotation_euler.z": "ROT_Z"}.get(rd.get("driver_property", "location.y"), "LOC_Y"),
+                        "source_space": "LOCAL_SPACE",
+                        "expression": rd.get("expression", "var"),
+                    })
+                else:
+                    bd["drivers"].append({
+                        "property": rd.driven_property.split(".")[0],
+                        "axis_index": {"x": 0, "y": 1, "z": 2}.get(rd.driven_property.split(".")[-1], 2),
+                        "source_bone": rd.driver_bone,
+                        "source_channel": "LOC_Y",
+                        "source_space": "LOCAL_SPACE",
+                        "expression": rd.expression or "var",
+                    })
 
-        # PRE-BUILD AUDIT: Auto-fix common mesh issues before building
-        matched_meshes = list(mesh_matches.values())
-        bone_names_set = {_format_bone_name(b.name, convention) for b in config.bones}
-        for mesh_obj in matched_meshes:
-            # P.1: Apply unapplied transforms
-            s = mesh_obj.scale
-            if abs(s.x - 1.0) > 0.001 or abs(s.y - 1.0) > 0.001 or abs(s.z - 1.0) > 0.001:
-                bpy.ops.object.select_all(action="DESELECT")
-                mesh_obj.select_set(True)
-                context.view_layer.objects.active = mesh_obj
-                bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-                build_warnings.append(f"Applied transforms on {mesh_obj.name}")
+            # Convert constraint defs to degree-based format
+            params = b.get("parameters", {}) if isinstance(b, dict) else b.parameters
+            for cdef in bd["constraints"]:
+                if cdef["type"] == "LIMIT_ROTATION" and not any(k.startswith("min_") or k.startswith("max_") for k in cdef if k not in ("type", "owner_space")):
+                    rot = params.get("rotation_degrees", params.get("rotation_per_step_degrees", 15))
+                    ax = bd["axis"].lower().replace("-", "")
+                    cdef[f"min_{ax}"] = 0
+                    cdef[f"max_{ax}"] = abs(rot)
+                if cdef["type"] == "LIMIT_LOCATION" and not any(k.startswith("min_") or k.startswith("max_") for k in cdef if k not in ("type", "owner_space")):
+                    travel = params.get("carrier_travel_m", params.get("assembly_travel_m", params.get("stroke_m", params.get("piston_stroke_m", 0.1))))
+                    ax = bd["axis"].lower().replace("-", "")
+                    cdef[f"min_{ax}"] = -abs(travel)
+                    cdef[f"max_{ax}"] = 0.003  # small overtravel
 
-            # P.4: Remove stray vertex groups that don't match bone names
-            stray = [vg.name for vg in mesh_obj.vertex_groups if vg.name not in bone_names_set]
-            for vg_name in stray:
-                vg = mesh_obj.vertex_groups.get(vg_name)
-                if vg:
-                    mesh_obj.vertex_groups.remove(vg)
+            bone_defs.append(bd)
 
-            # P.5: Remove shape keys (prevent separation/binding issues)
-            if mesh_obj.data.shape_keys:
-                mesh_obj.shape_key_clear()
-                build_warnings.append(f"Removed shape keys from {mesh_obj.name}")
-
-        # T11: Set mesh origins to geometry center so bone position matches
-        # deformation pivot (without this, mesh orbits around wrong point)
-        for mesh_obj in matched_meshes:
-            bpy.ops.object.select_all(action="DESELECT")
-            mesh_obj.select_set(True)
-            context.view_layer.objects.active = mesh_obj
-            bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="BOUNDS")
-
-        bpy.ops.object.select_all(action="DESELECT")
-        context.view_layer.objects.active = arm_obj
-        arm_obj.select_set(True)
-
-        # PHASE 1: Create ALL bones in one EDIT session
-        bpy.ops.object.mode_set(mode="EDIT")
-        arm_inv = arm_obj.matrix_world.inverted()
-        build_warnings = []
-        for bone_def in bones_to_add:
-            display_name = _format_bone_name(bone_def.name, convention)
-            # BUG A.1: Reuse existing bone if present (prevents duplicates on rebuild)
-            eb = arm_obj.data.edit_bones.get(display_name)
-            if eb is None:
-                eb = arm_obj.data.edit_bones.new(display_name)
-            eb.use_deform = True
-            eb.use_envelope_multiply = False  # T22: prevent envelope deformation
-
-            # Position at matched mesh centroid, or fallback to cursor
-            matched_mesh = mesh_matches.get(bone_def.name)
-            if matched_mesh:
-                world_pos = _obj_centroid(matched_mesh)
-                eb.head = arm_inv @ world_pos
-            else:
-                eb.head = arm_inv @ fallback_pos
-
-            _orient_bone(eb, bone_def)
-
-            if bone_def.parent:
-                parent_name = _format_bone_name(bone_def.parent, convention)
-                parent_eb = arm_obj.data.edit_bones.get(parent_name)
-                if parent_eb:
-                    eb.parent = parent_eb
-                    eb.use_connect = False
-
-        # Enforce unified skeleton — add dormant bones for animation sharing
-        active_names = {_format_bone_name(b.name, convention) for b in bones_to_add}
-        active_names.update(added)
-        _enforce_unified_skeleton(arm_obj, active_names, context)
-
-        # BUG 2.7: Prevent FBX gimbal lock at 90/180 degree parent angles
-        _apply_gimbal_safe_offsets(arm_obj.data)
-
-        bpy.ops.object.mode_set(mode="OBJECT")
-
-        # PHASE 2: Apply ALL constraints, drivers, shapes (H.3: error collection)
-        created = 0
-        for bone_def in bones_to_add:
-            try:
-                _apply_bone_constraints(arm_obj, bone_def, context)
-            except Exception as e:
-                build_warnings.append(f"Constraint on {bone_def.name}: {e}")
-            try:
-                _apply_bone_drivers(arm_obj, bone_def, context)
-            except Exception as e:
-                build_warnings.append(f"Driver on {bone_def.name}: {e}")
-            try:
-                _assign_bone_shape(arm_obj, bone_def, context)
-            except Exception:
-                pass  # Shape failure is cosmetic, not critical
-            created += 1
-
-        # PHASE 3: Bind matched meshes to bones
-        bound = 0
-        for bone_def in bones_to_add:
-            matched_mesh = mesh_matches.get(bone_def.name)
-            if matched_mesh:
-                display_name = _format_bone_name(bone_def.name, convention)
-                try:
-                    _bind_mesh_to_bone(matched_mesh, arm_obj, display_name)
-                    bound += 1
-                except Exception as e:
-                    build_warnings.append(f"Binding {bone_def.name}: {e}")
-
-        arm_obj.update_tag()
-        context.view_layer.update()
-        frame = context.scene.frame_current
-        context.scene.frame_set(frame + 1)
-        context.scene.frame_set(frame)
+        result = build_weapon_rig(context, bone_defs, mesh_objects, aliases)
 
         # Track added bones
         added_list = _get_added_list(context)
-        for bone_def in bones_to_add:
-            if bone_def.name not in added_list:
-                added_list.append(bone_def.name)
+        for bd in bone_defs:
+            if bd["name"] not in added_list:
+                added_list.append(bd["name"])
         context.scene.weaponrig_added_bones = json.dumps(added_list)
 
-        # POST-BUILD VERIFICATION
-        for bone in arm_obj.data.bones:
-            if not bone.use_deform and bone.name in bone_names_set:
-                build_warnings.append(f"Bone '{bone.name}' has use_deform=False")
-        for mesh_obj in matched_meshes:
-            for mod in mesh_obj.modifiers:
-                if mod.type == "ARMATURE":
-                    if mod.use_bone_envelopes:
-                        build_warnings.append(f"{mesh_obj.name}: Bone Envelopes enabled")
-                    if not mod.use_vertex_groups:
-                        build_warnings.append(f"{mesh_obj.name}: Vertex Groups disabled on modifier")
-            if not any(m.type == "ARMATURE" for m in mesh_obj.modifiers):
-                build_warnings.append(f"{mesh_obj.name}: No Armature modifier")
-        for pb in arm_obj.pose.bones:
-            if pb.rotation_mode not in ("XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"):
-                build_warnings.append(f"Bone '{pb.name}' uses {pb.rotation_mode} — switch to Euler")
-
-        # Report results (H.3: show warnings to rigger, not just console)
-        matched_count = len(mesh_matches)
-        if build_warnings:
-            for w in build_warnings:
-                self.report({"WARNING"}, w)
-            self.report({"WARNING"}, f"Built with {len(build_warnings)} warnings")
-        self.report({"INFO"}, f"Added {created} bones, matched {matched_count}, bound {bound} parts")
+        # Report
+        if result["issues"]:
+            for issue in result["issues"]:
+                self.report({"WARNING"}, issue)
+        self.report({"INFO"}, f"Built: {result['bone_count']} bones, {result['bound_count']} bound, {len(result['issues'])} issues")
         return {"FINISHED"}
 
 
