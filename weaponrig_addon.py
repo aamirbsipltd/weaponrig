@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 21, 0),
+    "version": (0, 22, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -3557,6 +3557,152 @@ class WEAPONRIG_OT_save_to_library(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class WEAPONRIG_OT_load_variant(bpy.types.Operator):
+    """Load a saved variant and apply overrides to current rig"""
+    bl_idname = "weaponrig.load_variant"
+    bl_label = "Load Variant"
+    bl_options = {"REGISTER", "UNDO"}
+
+    variant_name: bpy.props.StringProperty(name="Variant Name", default="")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "variant_name")
+        # Show available variants
+        weapon_type = context.scene.weaponrig_weapon_type
+        if weapon_type in WEAPON_CONFIGS:
+            variants = WEAPON_CONFIGS[weapon_type].get("variants", {})
+            if variants:
+                box = layout.box()
+                box.label(text="Available:", icon="FILE_FOLDER")
+                for vname in variants:
+                    box.label(text=f"  {vname}")
+
+    def execute(self, context):
+        weapon_type = context.scene.weaponrig_weapon_type
+        if weapon_type not in WEAPON_CONFIGS:
+            self.report({"ERROR"}, "No weapon config loaded")
+            return {"CANCELLED"}
+
+        variants = WEAPON_CONFIGS[weapon_type].get("variants", {})
+        variant = variants.get(self.variant_name)
+        if not variant:
+            self.report({"ERROR"}, f"Variant '{self.variant_name}' not found")
+            return {"CANCELLED"}
+
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if arm_obj is None:
+            self.report({"ERROR"}, "No WeaponRig armature found")
+            return {"CANCELLED"}
+
+        # Apply overrides — format: "bones.{name}.constraints.{i}.{attr}" = value (radians)
+        applied = 0
+        for path, value in variant.get("overrides", {}).items():
+            parts = path.split(".")
+            if len(parts) >= 5 and parts[0] == "bones" and parts[2] == "constraints":
+                bone_name = parts[1]
+                con_idx = int(parts[3])
+                attr = parts[4]
+                pb = arm_obj.pose.bones.get(bone_name)
+                if pb and con_idx < len(pb.constraints):
+                    con = pb.constraints[con_idx]
+                    if hasattr(con, attr):
+                        setattr(con, attr, value)
+                        applied += 1
+
+        arm_obj.data.update_tag()
+        context.view_layer.update()
+
+        self.report({"INFO"}, f"Loaded variant '{self.variant_name}': {applied} overrides applied")
+        return {"FINISHED"}
+
+
+# ===================================================================
+# ANIMATION PRESETS (v0.22 — configurable feel for fire cycles)
+# ===================================================================
+
+ANIM_PRESETS = {
+    "snappy": {
+        "description": "Fast mechanical action — military/tactical feel",
+        "bolt_interp": "EXPO", "bolt_ease": "EASE_OUT",
+        "spring_interp": "BACK", "spring_ease": "EASE_OUT",
+        "trigger_interp": "QUAD", "trigger_ease": "EASE_IN",
+        "handle_type": "AUTO_CLAMPED",
+        "idle_noise_strength": 0.001, "idle_noise_scale": 3.0,
+    },
+    "heavy": {
+        "description": "Weighty feel — large caliber / battle rifle / LMG",
+        "bolt_interp": "CUBIC", "bolt_ease": "EASE_IN_OUT",
+        "spring_interp": "ELASTIC", "spring_ease": "EASE_OUT",
+        "trigger_interp": "SINE", "trigger_ease": "EASE_IN",
+        "handle_type": "AUTO_CLAMPED",
+        "idle_noise_strength": 0.003, "idle_noise_scale": 2.0,
+    },
+    "tactical": {
+        "description": "Smooth, controlled — modern SMG / carbine",
+        "bolt_interp": "BEZIER", "bolt_ease": "AUTO",
+        "spring_interp": "BEZIER", "spring_ease": "AUTO",
+        "trigger_interp": "BEZIER", "trigger_ease": "EASE_IN_OUT",
+        "handle_type": "AUTO_CLAMPED",
+        "idle_noise_strength": 0.0015, "idle_noise_scale": 2.5,
+    },
+    "cinematic": {
+        "description": "Exaggerated for slow-mo / trailer shots",
+        "bolt_interp": "BACK", "bolt_ease": "EASE_OUT",
+        "spring_interp": "ELASTIC", "spring_ease": "EASE_OUT",
+        "trigger_interp": "CUBIC", "trigger_ease": "EASE_IN_OUT",
+        "handle_type": "AUTO",
+        "idle_noise_strength": 0.002, "idle_noise_scale": 1.5,
+    },
+}
+
+
+# ===================================================================
+# VERSION-SAFE ACTION HELPERS (v0.22)
+# ===================================================================
+
+def _ensure_fcurve(action, arm_obj, bone_name, channel, index):
+    """Get or create an FCurve — uses 4.4+ API when available."""
+    data_path = f'pose.bones["{bone_name}"].{channel}'
+
+    # Blender 4.4+: fcurve_ensure_for_datablock
+    if hasattr(action, "fcurve_ensure_for_datablock"):
+        try:
+            return action.fcurve_ensure_for_datablock(
+                arm_obj, data_path, index=index, group_name=bone_name
+            )
+        except Exception:
+            pass
+
+    # Legacy / fallback
+    for fc in action.fcurves:
+        if fc.data_path == data_path and fc.array_index == index:
+            return fc
+    return action.fcurves.new(data_path=data_path, index=index, action_group=bone_name)
+
+
+def _stash_to_nla(arm_obj, action):
+    """Push current action to a locked/muted NLA track, clear active action."""
+    anim = arm_obj.animation_data
+    if not anim or not action:
+        return
+
+    track = anim.nla_tracks.new()
+    track.name = action.name
+    start = int(getattr(action, "frame_start", 1))
+    track.strips.new(name=action.name, start=start, action=action)
+    track.lock = True
+    track.mute = True
+    anim.action = None
+
+
 # ===================================================================
 # SPATIAL PART MATCHING (v0.8 — fuzzy heuristics when names don't match)
 # ===================================================================
@@ -4824,6 +4970,7 @@ _classes = (
     WEAPONRIG_OT_test_rig,
     WEAPONRIG_OT_validate_export,
     WEAPONRIG_OT_save_to_library,
+    WEAPONRIG_OT_load_variant,
     WEAPONRIG_OT_new_config,
     WEAPONRIG_OT_import_mesh,
     WEAPONRIG_OT_inspect_mesh,
