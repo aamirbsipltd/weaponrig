@@ -2295,9 +2295,9 @@ def build_weapon_rig(context, config_bones, mesh_objects, part_aliases=None):
         else:
             bone_positions[name] = None
 
-    # SPATIAL FALLBACK: if most bones are unmatched, try spatial matching
+    # SPATIAL FALLBACK: run for ANY unmatched bones (not just >50%)
     unmatched_count = sum(1 for v in bone_positions.values() if v is None)
-    if unmatched_count > len(config_bones) * 0.5 and mesh_objects:
+    if unmatched_count > 0 and mesh_objects:
         # Most bones unmatched — name matching failed. Try spatial heuristics.
         # Build a minimal config-like object for _spatial_match_parts
         weapon_type = "unknown"
@@ -4072,21 +4072,43 @@ def _generate_camera_recoil(armature, config, fps=60):
 # ===================================================================
 
 _SPATIAL_RULES = {
+    # Structural — largest parts, identified by size and position
+    "weapon_root": {"volume": "largest"},
+    "upper_receiver": {"z_above": True, "volume": "large"},
+    "lower_receiver": {"z_below": True, "volume": "large"},
+    "frame": {"volume": "largest"},
+    "receiver": {"volume": "largest"},
+    # Action group — inside the receiver, medium-sized
+    "bolt_carrier": {"dominant_axis": "Y", "volume": "medium", "z_above": True},
+    "bolt": {"y_front": True, "volume": "small", "z_above": True},
+    "gas_piston": {"z_above": True, "y_front": True, "volume": "small", "dominant_axis": "Y"},
+    # External parts
     "barrel": {"dominant_axis": "Y", "aspect_min": 5.0},
     "magazine": {"z_below": True, "dominant_axis": "Z"},
     "trigger": {"z_below": True, "volume": "small"},
+    "hammer": {"z_below": True, "y_behind": True, "volume": "tiny"},
     "stock": {"y_behind": True},
     "grip": {"z_below": True, "y_behind": True},
     "muzzle_device": {"y_front": True, "volume": "small"},
     "dust_cover": {"x_right": True, "volume": "small"},
     "forward_assist": {"x_right": True, "volume": "tiny"},
+    "bolt_catch": {"x_left": True, "volume": "tiny"},
+    "magazine_release": {"volume": "tiny"},
     "selector": {"x_left": True, "volume": "tiny"},
     "charging_handle": {"z_above": True, "y_behind": True, "volume": "small"},
     "slide": {"z_above": True, "dominant_axis": "Y"},
+    "buffer_spring": {"y_behind": True, "dominant_axis": "Y", "volume": "small"},
+    "safety": {"volume": "tiny"},
+    "pump": {"z_below": True, "dominant_axis": "Y", "y_front": True},
 }
 
 # BUG 3.2: Bullpup weapons have reversed trigger/magazine positions
 _SPATIAL_RULES_BULLPUP = {
+    "weapon_root": {"volume": "largest"},
+    "outer_receiver": {"volume": "largest"},
+    "receiver": {"volume": "largest"},
+    "bolt_carrier": {"dominant_axis": "Y", "volume": "medium"},
+    "bolt": {"volume": "small"},
     "barrel": {"dominant_axis": "Y", "aspect_min": 5.0},
     "magazine": {"y_behind": True, "z_below": True},  # Behind grip in bullpup
     "trigger": {"z_below": True, "y_front": True, "volume": "small"},  # FORWARD in bullpup
@@ -4189,6 +4211,12 @@ def _spatial_match_parts(config, mesh_objects):
                 if rules["volume"] == "small" and info["vol"] < median_vol * 0.5:
                     score += 1.0
                 elif rules["volume"] == "tiny" and info["vol"] < median_vol * 0.15:
+                    score += 1.0
+                elif rules["volume"] == "medium" and median_vol * 0.3 < info["vol"] < median_vol * 1.5:
+                    score += 1.0
+                elif rules["volume"] == "large" and info["vol"] > median_vol * 1.0:
+                    score += 1.0
+                elif rules["volume"] == "largest" and info["vol"] > median_vol * 1.5:
                     score += 1.0
 
             norm_score = score / max(checks, 1)
