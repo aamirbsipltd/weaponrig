@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 23, 0),
+    "version": (0, 24, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -2080,12 +2080,12 @@ def _get_world_center(mesh_obj):
 
 
 def _sanitize_bone_name(name):
-    """P.8: Make bone name safe for data paths and FBX export."""
-    safe = name.replace(".", "_").replace("-", "_").replace(" ", "_")
-    safe = safe.replace("(", "").replace(")", "").replace("[", "").replace("]", "")
-    while "__" in safe:
-        safe = safe.replace("__", "_")
-    return safe.strip("_")
+    """P.8: Make bone name safe for data paths and FBX export.
+    KEEP SPACES — Blender handles them fine (data paths are quoted).
+    Only remove chars that break Python parsing or FBX."""
+    safe = name.replace(".", " ").replace("[", "").replace("]", "")
+    safe = safe.replace("(", "").replace(")", "")
+    return safe.strip()
 
 
 def _audit_modifiers(mesh_obj):
@@ -2294,7 +2294,43 @@ def build_weapon_rig(context, config_bones, mesh_objects, part_aliases=None):
             bone_positions[name] = {"head": center, "tail": center + avecs.get(axis, avecs["Y"])}
         else:
             bone_positions[name] = None
-            issues.append(f"No mesh for '{name}'")
+
+    # SPATIAL FALLBACK: if most bones are unmatched, try spatial matching
+    unmatched_count = sum(1 for v in bone_positions.values() if v is None)
+    if unmatched_count > len(config_bones) * 0.5 and mesh_objects:
+        # Most bones unmatched — name matching failed. Try spatial heuristics.
+        # Build a minimal config-like object for _spatial_match_parts
+        weapon_type = "unknown"
+        try:
+            weapon_type = bpy.context.scene.weaponrig_weapon_type
+        except Exception:
+            pass
+        spatial = {}
+        if weapon_type in WEAPON_CONFIGS:
+            try:
+                _cfg = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
+                spatial = _spatial_match_parts(_cfg, mesh_objects)
+            except Exception:
+                pass
+        for bdef in config_bones:
+            name = bdef["name"]
+            if bone_positions[name] is None and name in spatial:
+                mesh_obj = spatial[name]
+                center = _get_world_center(mesh_obj)
+                bone_mesh_map[name] = mesh_obj
+                axis = bdef.get("axis", "Y")
+                avecs = {
+                    "X": Vector((BONE_LENGTH, 0, 0)), "Y": Vector((0, BONE_LENGTH, 0)),
+                    "Z": Vector((0, 0, BONE_LENGTH)), "-X": Vector((-BONE_LENGTH, 0, 0)),
+                    "-Y": Vector((0, -BONE_LENGTH, 0)), "-Z": Vector((0, 0, -BONE_LENGTH)),
+                }
+                bone_positions[name] = {"head": center, "tail": center + avecs.get(axis, avecs["Y"])}
+                issues.append(f"Spatial match: '{name}' → '{mesh_obj.name}'")
+
+    # Report truly unmatched bones
+    for name, pos in bone_positions.items():
+        if pos is None:
+            issues.append(f"No mesh for '{name}' — bone will be at origin")
 
     # PHASE 1: ARMATURE + BONES (Edit Mode — ONE entry, ONE exit)
     arm_data = bpy.data.armatures.new("WeaponRig")
@@ -3755,6 +3791,280 @@ def _interpolate_cam_profile(curve, travel_pct):
                 return r0 + frac * (r1 - r0)
             return r0
     return curve[-1][1] if curve else 0.0
+
+
+# ===================================================================
+# ANIMATION EVENT MARKERS (v0.24)
+# ===================================================================
+
+def _add_action_marker(action, name, frame):
+    """Add a pose marker to an Action for engine event timing (muzzle flash, SFX)."""
+    marker = action.pose_markers.new(name=name)
+    marker.frame = frame
+
+
+# ===================================================================
+# GAP ANIMATION GENERATORS (v0.24)
+# ===================================================================
+
+def _generate_reload_empty(armature, config, preset_name="snappy", fps=60):
+    """Reload empty: bolt locked back → mag swap → bolt release slam."""
+    action = bpy.data.actions.new(name=f"Reload_Empty_{config.display_name}")
+    total = int(3.2 * fps)
+    action.frame_start = 1
+    action.frame_end = total
+
+    bolt_travel = 0.095
+    for bd in config.bones:
+        if bd.movement_type == "translate" and bd.constraints:
+            bolt_travel = abs(bd.parameters.get("carrier_travel_m", 0.095))
+            break
+
+    # Bolt carrier: starts locked back, slams forward at ~2.4s
+    carrier = None
+    for bd in config.bones:
+        if bd.movement_type == "translate" and any(c.type == "LIMIT_LOCATION" for c in bd.constraints):
+            carrier = bd.name
+            break
+    if carrier and armature.pose.bones.get(carrier):
+        fc = _ensure_fcurve(action, armature, carrier, "location", 1)
+        rel = int(fps * 2.4)
+        seat = rel + int(fps * 0.08)
+        for f, v in [(1, -bolt_travel), (rel, -bolt_travel), (rel + 2, -bolt_travel * 0.8),
+                     (seat, -bolt_travel * 0.005), (seat + 1, 0.0), (total, 0.0)]:
+            kp = fc.keyframe_points.insert(frame=f, value=v, options={"FAST"})
+            kp.interpolation = "BEZIER"
+        fc.update()
+
+    # Magazine: out then in
+    if armature.pose.bones.get("Magazine"):
+        fc = _ensure_fcurve(action, armature, "Magazine", "location", 1)
+        drop = bolt_travel * 2
+        for f, v in [(1, 0), (int(fps * 0.3), 0), (int(fps * 0.8), -drop),
+                     (int(fps * 1.2), -drop), (int(fps * 1.8), -drop * 0.1),
+                     (int(fps * 1.9), 0), (total, 0)]:
+            kp = fc.keyframe_points.insert(frame=f, value=v, options={"FAST"})
+            kp.interpolation = "BEZIER"
+        fc.update()
+
+    _add_action_marker(action, "MagOut", int(fps * 0.8))
+    _add_action_marker(action, "MagIn", int(fps * 1.9))
+    _add_action_marker(action, "BoltRelease", int(fps * 2.4))
+    _add_action_marker(action, "BoltSeat", int(fps * 2.4) + int(fps * 0.08))
+    return action
+
+
+def _generate_melee(armature, config, fps=60):
+    """Melee strike: wind up → strike forward → recover."""
+    action = bpy.data.actions.new(name=f"Melee_{config.display_name}")
+    total = int(0.6 * fps)
+    action.frame_start = 1
+    action.frame_end = total
+
+    root = None
+    for bd in config.bones:
+        if bd.parent is None:
+            root = bd.name
+            break
+    if not root or not armature.pose.bones.get(root):
+        return action
+
+    # Rotation: wind → strike → overshoot → recover
+    fc = _ensure_fcurve(action, armature, root, "rotation_euler", 0)
+    wind = int(total * 0.2)
+    strike = int(total * 0.45)
+    for f, v in [(1, 0), (wind, math.radians(-15)), (strike, math.radians(40)),
+                 (int(total * 0.55), math.radians(44)), (total, 0)]:
+        kp = fc.keyframe_points.insert(frame=f, value=v, options={"FAST"})
+        kp.interpolation = "BEZIER"
+    fc.update()
+
+    # Forward push
+    fc2 = _ensure_fcurve(action, armature, root, "location", 1)
+    for f, v in [(1, 0), (wind, -0.02), (strike, 0.05), (total, 0)]:
+        kp = fc2.keyframe_points.insert(frame=f, value=v, options={"FAST"})
+        kp.interpolation = "BEZIER"
+    fc2.update()
+
+    _add_action_marker(action, "MeleeImpact", strike)
+    return action
+
+
+def _generate_pump_cycle(armature, config, fps=60):
+    """Pump-action cycle: fire → pump back → pump forward → chamber."""
+    action = bpy.data.actions.new(name=f"PumpCycle_{config.display_name}")
+    total = int(1.2 * fps)
+    action.frame_start = 1
+    action.frame_end = total
+
+    bolt_travel = 0.095
+    for bd in config.bones:
+        if bd.name in ("Pump", "pump") and bd.parameters.get("carrier_travel_m"):
+            bolt_travel = bd.parameters["carrier_travel_m"]
+            break
+
+    pump_name = None
+    for name in ("Pump", "pump", "Forend", "forend", "pump_handle"):
+        if armature.pose.bones.get(name):
+            pump_name = name
+            break
+
+    if pump_name:
+        fc = _ensure_fcurve(action, armature, pump_name, "location", 1)
+        ps = int(fps * 0.25)
+        pb = int(fps * 0.55)
+        pf = int(fps * 0.85)
+        cs = int(fps * 1.0)
+        for f, v in [(1, 0), (ps, 0), (pb, -bolt_travel), (pb + int(fps * 0.05), -bolt_travel),
+                     (pf, -bolt_travel * 0.1), (cs, 0), (total, 0)]:
+            kp = fc.keyframe_points.insert(frame=f, value=v, options={"FAST"})
+            kp.interpolation = "BEZIER"
+        fc.update()
+
+    _add_action_marker(action, "Fire", 1)
+    _add_action_marker(action, "PumpStart", int(fps * 0.25))
+    _add_action_marker(action, "ShellEject", int(fps * 0.55))
+    _add_action_marker(action, "Chamber", int(fps * 1.0))
+    return action
+
+
+def _generate_bolt_action_cycle(armature, config, fps=60):
+    """Bolt-action: lift → pull back → push forward → lock down."""
+    action = bpy.data.actions.new(name=f"BoltAction_{config.display_name}")
+    total = int(1.8 * fps)
+    action.frame_start = 1
+    action.frame_end = total
+
+    bolt_travel = 0.095
+    bolt_rot_deg = 90.0
+    for bd in config.bones:
+        if "bolt" in bd.name.lower():
+            bolt_travel = bd.parameters.get("carrier_travel_m", bolt_travel)
+            bolt_rot_deg = bd.parameters.get("rotation_degrees", bolt_rot_deg)
+
+    bolt_rot = math.radians(bolt_rot_deg)
+    bolt_name = None
+    for name in ("Bolt", "bolt", "Bolt Handle", "bolt_handle"):
+        if armature.pose.bones.get(name):
+            bolt_name = name
+            break
+
+    if not bolt_name:
+        return action
+
+    p1 = int(fps * 0.35)
+    p2 = int(fps * 0.75)
+    p3 = int(fps * 1.15)
+    p4 = int(fps * 1.50)
+
+    # Rotation: lift and lock
+    fc_rot = _ensure_fcurve(action, armature, bolt_name, "rotation_euler", 2)
+    for f, v in [(1, 0), (int(fps * 0.1), 0), (p1, bolt_rot), (p2, bolt_rot),
+                 (p3, bolt_rot), (p4, 0), (total, 0)]:
+        kp = fc_rot.keyframe_points.insert(frame=f, value=v, options={"FAST"})
+        kp.interpolation = "BEZIER"
+    fc_rot.update()
+
+    # Translation: pull back and push forward
+    fc_loc = _ensure_fcurve(action, armature, bolt_name, "location", 1)
+    for f, v in [(1, 0), (p1, 0), (p2, -bolt_travel), (p3, 0), (p4, 0), (total, 0)]:
+        kp = fc_loc.keyframe_points.insert(frame=f, value=v, options={"FAST"})
+        kp.interpolation = "BEZIER"
+    fc_loc.update()
+
+    _add_action_marker(action, "Fire", 1)
+    _add_action_marker(action, "BoltLift", int(fps * 0.1))
+    _add_action_marker(action, "ShellEject", p2)
+    _add_action_marker(action, "Chamber", p3)
+    _add_action_marker(action, "BoltLock", p4)
+    return action
+
+
+def _generate_revolver_cycle(armature, config, fps=60):
+    """Revolver: cylinder rotates one chamber, hammer cocks + strikes."""
+    action = bpy.data.actions.new(name=f"Revolver_{config.display_name}")
+    total = int(0.5 * fps)
+    action.frame_start = 1
+    action.frame_end = total
+
+    chamber_count = 6
+    for bd in config.bones:
+        if "cylinder" in bd.name.lower():
+            chamber_count = bd.parameters.get("chamber_count", 6)
+    rot_per_shot = math.radians(360.0 / chamber_count)
+
+    # Cylinder rotation
+    cyl_name = None
+    for name in ("Cylinder", "cylinder"):
+        if armature.pose.bones.get(name):
+            cyl_name = name
+            break
+    if cyl_name:
+        fc = _ensure_fcurve(action, armature, cyl_name, "rotation_euler", 2)
+        rot_end = int(total * 0.15)
+        for f, v in [(1, 0), (rot_end, rot_per_shot), (total, rot_per_shot)]:
+            kp = fc.keyframe_points.insert(frame=f, value=v, options={"FAST"})
+            kp.interpolation = "BEZIER"
+        fc.update()
+
+    # Hammer: cock → strike
+    if armature.pose.bones.get("Hammer") or armature.pose.bones.get("hammer"):
+        h_name = "Hammer" if armature.pose.bones.get("Hammer") else "hammer"
+        fc = _ensure_fcurve(action, armature, h_name, "rotation_euler", 2)
+        cock = int(total * 0.12)
+        strike = int(total * 0.18)
+        for f, v in [(1, 0), (cock, math.radians(-25)), (strike, math.radians(15)),
+                     (strike + 2, math.radians(12)), (total, math.radians(12))]:
+            kp = fc.keyframe_points.insert(frame=f, value=v, options={"FAST"})
+            kp.interpolation = "BEZIER"
+        fc.update()
+
+    _add_action_marker(action, "Fire", int(total * 0.18))
+    return action
+
+
+def _generate_camera_recoil(armature, config, fps=60):
+    """Camera shake bone — spring-damped kick for visceral feel."""
+    # Add camera bone if missing
+    if not armature.pose.bones.get("camera"):
+        bpy.context.view_layer.objects.active = armature
+        bpy.ops.object.mode_set(mode="EDIT")
+        cam = armature.data.edit_bones.new("camera")
+        cam.head = (0.0, -0.05, 0.15)
+        cam.tail = (0.0, -0.05, 0.20)
+        root_eb = armature.data.edit_bones.get("Weapon Root") or (armature.data.edit_bones[0] if armature.data.edit_bones else None)
+        if root_eb:
+            cam.parent = root_eb
+        cam.use_deform = False
+        bpy.ops.object.mode_set(mode="OBJECT")
+        armature.pose.bones["camera"].rotation_mode = "XYZ"
+
+    action = bpy.data.actions.new(name=f"CameraRecoil_{config.display_name}")
+    shake_frames = int(0.25 * fps)
+    action.frame_start = 1
+    action.frame_end = shake_frames
+
+    pitch = config.physics.get("recoil_params", {}).get("kick_up_deg", 3.0) * 1.5
+    yaw = config.physics.get("recoil_params", {}).get("kick_side_deg", 0.5) * 1.5
+    roll = 1.0
+
+    for axis_idx, amp_deg, phase in [(0, pitch, 0.0), (1, roll, 0.3), (2, yaw, 0.1)]:
+        fc = _ensure_fcurve(action, armature, "camera", "rotation_euler", axis_idx)
+        amp = math.radians(amp_deg)
+        keys = []
+        for step in range(0, shake_frames, 3):
+            t = step / float(shake_frames)
+            decay = math.exp(-6.0 * t)
+            osc = math.cos(12.0 * t + phase)
+            val = amp * decay * (0.7 + 0.3 * osc) if step > 0 else 0.0
+            keys.append((1 + step, val))
+        keys.append((shake_frames, 0.0))
+        for f, v in keys:
+            kp = fc.keyframe_points.insert(frame=f, value=v, options={"FAST"})
+            kp.interpolation = "BEZIER"
+        fc.update()
+
+    return action
 
 
 # ===================================================================
