@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 22, 0),
+    "version": (0, 23, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -330,6 +330,7 @@ WEAPON_CONFIGS = {
             "buffer_spring_rate_n_per_m": 3500,
             "return_spring_preload_n": 8.0,
             "bolt_carrier_mass_kg": 0.297,
+            "recoil_params": {"weapon_mass_kg": 3.2, "kick_back_m": 0.02, "kick_up_deg": 2.5, "kick_side_deg": 0.3, "recovery_halflife": 0.15},
         },
         "part_name_aliases": {
             "Bolt Carrier": ["*bcg*", "*bolt_carrier*", "*bolt*carrier*", "*carrier*"],
@@ -406,7 +407,8 @@ WEAPON_CONFIGS = {
              "placement": "Place at front of recoil spring guide rod"},
         ],
         "physics": {"carrier_mass_kg": 0.460, "buffer_spring_rate_n_per_m": 2800, "gas_impulse_duration_ms": 1.5,
-                    "carrier_peak_velocity_m_per_s": 5.2, "bolt_carrier_mass_kg": 0.460},
+                    "carrier_peak_velocity_m_per_s": 5.2, "bolt_carrier_mass_kg": 0.460,
+                    "recoil_params": {"weapon_mass_kg": 3.9, "kick_back_m": 0.03, "kick_up_deg": 4.0, "kick_side_deg": 1.2, "recovery_halflife": 0.18}},
         "part_name_aliases": {"Bolt Carrier": ["*carrier*", "*bcg*"], "Bolt": ["*bolt*"], "Trigger": ["*trigger*"],
                               "Safety Selector": ["*safety*", "*selector*"], "Magazine": ["*mag*"],
                               "Receiver": ["*receiver*", "*body*"]},
@@ -3704,6 +3706,58 @@ def _stash_to_nla(arm_obj, action):
 
 
 # ===================================================================
+# CAM PROFILES — rich non-linear bolt rotation curves per weapon
+# ===================================================================
+
+CAM_PROFILES = {
+    "ar15_di": {
+        "unlock_curve": [
+            (0.00, 0.00), (0.05, 0.00), (0.10, 0.15),
+            (0.15, 0.55), (0.20, 0.90), (0.22, 1.00), (1.00, 1.00),
+        ],
+        "lock_curve": [
+            (0.00, 1.00), (0.78, 1.00), (0.80, 0.90),
+            (0.85, 0.55), (0.90, 0.15), (0.95, 0.00), (1.00, 0.00),
+        ],
+    },
+    "ak47_long_stroke": {
+        "unlock_curve": [
+            (0.00, 0.00), (0.08, 0.00), (0.12, 0.20),
+            (0.18, 0.75), (0.22, 1.00), (1.00, 1.00),
+        ],
+        "lock_curve": [
+            (0.00, 1.00), (0.78, 1.00), (0.82, 0.75),
+            (0.88, 0.20), (0.92, 0.00), (1.00, 0.00),
+        ],
+    },
+    "fn_fal": {
+        "unlock_curve": [
+            (0.00, 0.00), (0.06, 0.00), (0.11, 0.30),
+            (0.16, 0.70), (0.21, 1.00), (1.00, 1.00),
+        ],
+        "lock_curve": [
+            (0.00, 1.00), (0.79, 1.00), (0.84, 0.70),
+            (0.89, 0.30), (0.94, 0.00), (1.00, 0.00),
+        ],
+    },
+}
+
+
+def _interpolate_cam_profile(curve, travel_pct):
+    """Interpolate a cam profile curve at the given travel percentage."""
+    for i in range(len(curve) - 1):
+        t0, r0 = curve[i]
+        t1, r1 = curve[i + 1]
+        if t0 <= travel_pct <= t1:
+            seg = t1 - t0
+            if seg > 0:
+                frac = (travel_pct - t0) / seg
+                return r0 + frac * (r1 - r0)
+            return r0
+    return curve[-1][1] if curve else 0.0
+
+
+# ===================================================================
 # SPATIAL PART MATCHING (v0.8 — fuzzy heuristics when names don't match)
 # ===================================================================
 
@@ -4018,8 +4072,9 @@ def _simulate_carrier_cycle(params, fps=60):
     return results
 
 
-def _bake_cycle_to_action(armature, config, fps=60):
+def _bake_cycle_to_action(armature, config, fps=60, preset_name="snappy"):
     """Simulate firing cycle and bake to a Blender Action. Returns the Action."""
+    preset = ANIM_PRESETS.get(preset_name, ANIM_PRESETS.get("snappy", {}))
     physics = config.physics
     if not physics:
         return None
@@ -4055,14 +4110,19 @@ def _bake_cycle_to_action(armature, config, fps=60):
 
     axis_idx = _AXIS_INDEX.get(carrier_bone.axis.lower(), 1) if carrier_bone.axis else 1
     data_path = f'pose.bones["{carrier_bone.name}"].location'
-    fcu = action.fcurves.new(data_path=data_path, index=axis_idx)
+    fcu = _ensure_fcurve(action, arm, carrier_bone.name, "location", axis_idx)
     fcu.keyframe_points.add(len(carrier_positions))
+    # Get preset interpolation (default BEZIER if no preset)
+    bolt_interp = preset.get("bolt_interp", "BEZIER") if preset else "BEZIER"
     for i, (frame, pos) in enumerate(sorted(carrier_positions.items())):
-        fcu.keyframe_points[i].co = (frame + 1, pos)  # Blender frames start at 1
-        fcu.keyframe_points[i].interpolation = "BEZIER"
+        fcu.keyframe_points[i].co = (frame + 1, pos)
+        fcu.keyframe_points[i].interpolation = bolt_interp
     fcu.update()
 
-    # Drive dependent bones (rotation bones with drivers linked to carrier)
+    # Drive dependent bones — use CAM_PROFILES for rich curves when available
+    weapon_os = config.operating_system
+    cam_profile = CAM_PROFILES.get(weapon_os)
+
     for bd in config.bones:
         if not bd.drivers:
             continue
@@ -4070,37 +4130,45 @@ def _bake_cycle_to_action(armature, config, fps=60):
             if ddef.driver_bone != carrier_bone.name:
                 continue
             d_path, d_idx = _parse_prop(ddef.driven_property)
-            dfcu = action.fcurves.new(
-                data_path=f'pose.bones["{bd.name}"].{d_path}', index=d_idx
-            )
+            dfcu = _ensure_fcurve(action, arm, bd.name, d_path, d_idx)
             dfcu.keyframe_points.add(len(carrier_positions))
-            for i, (frame, carrier_pos) in enumerate(sorted(carrier_positions.items())):
-                var = carrier_pos
-                if ddef.cam_curve_keyframes:
-                    travel = bd.parameters.get("carrier_travel_m", carrier_bone.parameters.get("carrier_travel_m", 1.0))
-                    rot_rad = math.radians(bd.parameters.get("rotation_degrees", 1.0))
+
+            travel = bd.parameters.get("carrier_travel_m", carrier_bone.parameters.get("carrier_travel_m", 1.0))
+            rot_rad = math.radians(bd.parameters.get("rotation_degrees", 1.0))
+
+            sorted_frames = sorted(carrier_positions.items())
+            # Find the peak rearward frame for unlock/lock phase split
+            peak_frame = max(sorted_frames, key=lambda x: abs(x[1]))[0] if sorted_frames else 0
+
+            for i, (frame, carrier_pos) in enumerate(sorted_frames):
+                pct = abs(carrier_pos) / travel if travel > 0 else 0
+
+                if cam_profile:
+                    # Rich cam profile: use unlock curve going back, lock curve returning
+                    if frame <= peak_frame:
+                        val = _interpolate_cam_profile(cam_profile["unlock_curve"], pct) * rot_rad
+                    else:
+                        val = _interpolate_cam_profile(cam_profile["lock_curve"], pct) * rot_rad
+                elif ddef.cam_curve_keyframes:
+                    # Sparse config cam keyframes (fallback)
                     sorted_kfs = sorted(ddef.cam_curve_keyframes, key=lambda k: k.carrier_travel_pct)
-                    pct = abs(var) / travel if travel > 0 else 0
                     val = 0.0
                     for ki in range(len(sorted_kfs) - 1):
                         if sorted_kfs[ki].carrier_travel_pct <= pct <= sorted_kfs[ki + 1].carrier_travel_pct:
                             seg_len = sorted_kfs[ki + 1].carrier_travel_pct - sorted_kfs[ki].carrier_travel_pct
-                            if seg_len > 0:
-                                t = (pct - sorted_kfs[ki].carrier_travel_pct) / seg_len
-                            else:
-                                t = 0
+                            t = (pct - sorted_kfs[ki].carrier_travel_pct) / seg_len if seg_len > 0 else 0
                             val = (sorted_kfs[ki].bolt_rotation_pct + t * (sorted_kfs[ki + 1].bolt_rotation_pct - sorted_kfs[ki].bolt_rotation_pct)) * rot_rad
                             break
                     else:
-                        if sorted_kfs:
-                            val = sorted_kfs[-1].bolt_rotation_pct * rot_rad
+                        val = sorted_kfs[-1].bolt_rotation_pct * rot_rad if sorted_kfs else 0.0
                 else:
                     try:
-                        val = eval(ddef.expression or "var", {"var": var, "abs": abs, "math": math})
+                        val = eval(ddef.expression or "var", {"var": carrier_pos, "abs": abs, "math": math})
                     except Exception:
                         val = 0.0
+
                 dfcu.keyframe_points[i].co = (frame + 1, val)
-                dfcu.keyframe_points[i].interpolation = "BEZIER"
+                dfcu.keyframe_points[i].interpolation = bolt_interp
             dfcu.update()
 
     return action
@@ -4132,15 +4200,27 @@ _RECOIL_PRESETS = {
 }
 
 
-def _generate_recoil_action(armature, root_bone_name, preset_name="rifle", fps=60):
-    """Generate a recoil animation using critically-damped spring physics."""
+def _generate_recoil_action(armature, root_bone_name, preset_name="rifle", fps=60, config=None):
+    """Generate a recoil animation using critically-damped spring physics.
+    Uses weapon-specific recoil_params from config if available, else falls back to preset."""
     preset = _RECOIL_PRESETS.get(preset_name, _RECOIL_PRESETS["rifle"])
+
+    # Weapon-specific overrides from config physics
+    if config and hasattr(config, "physics") and config.physics.get("recoil_params"):
+        rp = config.physics["recoil_params"]
+        preset = {
+            "kick_back": rp.get("kick_back_m", preset["kick_back"]),
+            "kick_up_deg": rp.get("kick_up_deg", preset["kick_up_deg"]),
+            "kick_side_deg": rp.get("kick_side_deg", preset["kick_side_deg"]),
+            "recovery_halflife": rp.get("recovery_halflife", preset["recovery_halflife"]),
+        }
+
     dt = 1.0 / fps
     num_frames = int(0.4 * fps)  # 400ms
 
     channels = {
-        ("location", 1): -preset["kick_back"],        # Y backward kick
-        ("rotation_euler", 0): math.radians(preset["kick_up_deg"]),   # X muzzle rise
+        ("location", 1): -preset["kick_back"],
+        ("rotation_euler", 0): math.radians(preset["kick_up_deg"]),
         ("rotation_euler", 2): math.radians(preset["kick_side_deg"]) * (1 if hash(root_bone_name) % 2 == 0 else -1),
     }
 
@@ -4151,8 +4231,7 @@ def _generate_recoil_action(armature, root_bone_name, preset_name="rifle", fps=6
     action = bpy.data.actions.new(name=f"Recoil_{preset_name}")
 
     for (prop, idx), initial in channels.items():
-        data_path = f'pose.bones["{root_bone_name}"].{prop}'
-        fcu = action.fcurves.new(data_path=data_path, index=idx)
+        fcu = _ensure_fcurve(action, arm, root_bone_name, prop, idx)
         fcu.keyframe_points.add(num_frames)
 
         x, v = initial, 0.0
@@ -4193,7 +4272,11 @@ def _create_fire_mode_actions(armature, cycle_action, recoil_action, config, fps
         auto_action = bpy.data.actions.new(name=f"Fire_Auto_{config.display_name}")
 
         for fcu_src in cycle_action.fcurves:
-            fcu = auto_action.fcurves.new(data_path=fcu_src.data_path, index=fcu_src.array_index)
+            # Parse bone name from data_path for _ensure_fcurve
+            _bp = fcu_src.data_path
+            _bn = _bp.split('"')[1] if '"' in _bp else ""
+            _ch = _bp.split(".")[-1] if "." in _bp else "location"
+            fcu = _ensure_fcurve(auto_action, armature, _bn, _ch, fcu_src.array_index) if _bn else auto_action.fcurves.new(data_path=_bp, index=fcu_src.array_index)
             kf_data = []
             for shot in range(burst_count):
                 offset = shot * frames_per_shot
@@ -4212,7 +4295,10 @@ def _create_fire_mode_actions(armature, cycle_action, recoil_action, config, fps
         burst_action = bpy.data.actions.new(name=f"Fire_Burst3_{config.display_name}")
 
         for fcu_src in cycle_action.fcurves:
-            fcu = burst_action.fcurves.new(data_path=fcu_src.data_path, index=fcu_src.array_index)
+            _bp = fcu_src.data_path
+            _bn = _bp.split('"')[1] if '"' in _bp else ""
+            _ch = _bp.split(".")[-1] if "." in _bp else "location"
+            fcu = _ensure_fcurve(burst_action, armature, _bn, _ch, fcu_src.array_index) if _bn else burst_action.fcurves.new(data_path=_bp, index=fcu_src.array_index)
             kf_data = []
             for shot in range(3):
                 offset = shot * frames_per_shot
@@ -4224,14 +4310,10 @@ def _create_fire_mode_actions(armature, cycle_action, recoil_action, config, fps
             fcu.update()
         actions["burst_3"] = burst_action
 
-    # Push all to NLA tracks
-    anim_data = armature.animation_data
-    for mode_name, action in actions.items():
-        track = anim_data.nla_tracks.new()
-        track.name = f"FireMode_{mode_name}"
-        track.strips.new(name=action.name, start=0, action=action)
+    # Push all to NLA tracks using _stash_to_nla
+    for _mode_name, _action in actions.items():
+        _stash_to_nla(armature, _action)
 
-    anim_data.action = None  # clear active so NLA takes over
     return actions
 
 
@@ -4509,6 +4591,15 @@ class WEAPONRIG_OT_generate_cycle(bpy.types.Operator):
     bl_label = "Generate Firing Cycle"
     bl_options = {"REGISTER", "UNDO"}
 
+    preset: bpy.props.EnumProperty(
+        name="Feel",
+        items=[("snappy", "Snappy", "Fast mechanical action"),
+               ("heavy", "Heavy", "Weighty battle rifle feel"),
+               ("tactical", "Tactical", "Smooth controlled feel"),
+               ("cinematic", "Cinematic", "Exaggerated for trailers")],
+        default="snappy",
+    )
+
     def execute(self, context):
         arm_obj = None
         for obj in context.scene.objects:
@@ -4525,11 +4616,12 @@ class WEAPONRIG_OT_generate_cycle(bpy.types.Operator):
             return {"CANCELLED"}
 
         config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
-        action = _bake_cycle_to_action(arm_obj, config)
+        action = _bake_cycle_to_action(arm_obj, config, preset_name=self.preset)
         if action is None:
             self.report({"ERROR"}, "Could not generate cycle — check physics config")
             return {"CANCELLED"}
 
+        _stash_to_nla(arm_obj, action) if arm_obj.animation_data and arm_obj.animation_data.action else None
         arm_obj.animation_data.action = action
         start, end = action.frame_range
         context.scene.frame_start = int(start)
@@ -4579,7 +4671,8 @@ class WEAPONRIG_OT_generate_recoil(bpy.types.Operator):
             self.report({"ERROR"}, "No root bone found")
             return {"CANCELLED"}
 
-        action = _generate_recoil_action(arm_obj, root_name, self.preset)
+        recoil_config = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type]) if weapon_type in WEAPON_CONFIGS else None
+        action = _generate_recoil_action(arm_obj, root_name, self.preset, config=recoil_config)
         arm_obj.animation_data.action = action
         start, end = action.frame_range
         context.scene.frame_start = int(start)
