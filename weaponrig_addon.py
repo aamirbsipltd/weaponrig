@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 20, 0),
+    "version": (0, 21, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -784,6 +784,325 @@ WEAPON_CONFIGS = {
                               "Gas Accelerator": ["*gas*", "*poppet*"], "Op Rod": ["*op*rod*", "*operating*rod*"],
                               "Lock Block": ["*lock*block*", "*locking*"], "Bolt": ["*bolt*"],
                               "Charging Handle": ["*charging*", "*ch*"], "Magazine": ["*mag*"]},
+    },
+    "fn_p90": {
+        "schema_version": "1.0",
+        "operating_system": "simple_blowback",
+        "display_name": "FN P90",
+        "description": "Bullpup SMG — simple blowback, top-mounted magazine, downward ejection",
+        "fire_modes": ["semi", "auto"],
+        "cyclic_rate_rpm": {"semi": None, "auto": 900},
+        "bones": [
+            {"name": "Weapon Root", "parent": None, "presence": "required", "movement_type": "static",
+             "description": "Main receiver body", "placement": "Place at the center of the receiver"},
+            {"name": "Bolt", "parent": "Weapon Root", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "description": "Heavy bolt — simple blowback, no locking. Mass alone resists opening",
+             "placement": "Place at rear of bolt, centered in receiver channel",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_y": -0.065, "max_y": 0.002, "use_min_y": True, "use_max_y": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_z": 0, "max_z": 0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"carrier_travel_m": 0.065, "carrier_mass_kg": 0.35}},
+            {"name": "Trigger", "parent": "Weapon Root", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "description": "Trigger — forward of magazine in bullpup layout",
+             "placement": "Place at trigger pin center, forward of the grip",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0, "max_x": 0.209, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 12}},
+            {"name": "Magazine", "parent": "Weapon Root", "presence": "required", "movement_type": "translate", "axis": "Z",
+             "description": "Top-mounted horizontal magazine (50-round)",
+             "placement": "Place at top of receiver where magazine sits horizontally",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_z": 0, "max_z": 0.10, "use_min_z": True, "use_max_z": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_y": 0, "max_y": 0, "use_min_y": True, "use_max_y": True, "owner_space": "LOCAL"}]},
+            {"name": "Charging Handle", "parent": "Bolt", "presence": "expected", "movement_type": "translate", "axis": "Y",
+             "description": "Left-side charging handle, linked to bolt",
+             "placement": "Place on left side of receiver, attached to bolt"},
+            {"name": "Selector", "parent": "Weapon Root", "presence": "expected", "movement_type": "rotate", "axis": "X",
+             "description": "Rotary selector — Safe / Semi / Auto",
+             "placement": "Place on left side below the optical sight rail",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0, "max_x": 3.142, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 180, "positions": [{"name": "safe", "angle_degrees": 0}, {"name": "semi", "angle_degrees": 90}, {"name": "auto", "angle_degrees": 180}]}},
+        ],
+        "physics": {"bolt_carrier_mass_kg": 0.35, "buffer_spring_rate_n_per_m": 2800},
+        "part_name_aliases": {"Bolt": ["*bolt*", "*breech*"], "Trigger": ["*trigger*"], "Magazine": ["*mag*", "*magazine*"],
+                              "Charging Handle": ["*charging*", "*cocking*", "*ch*"], "Selector": ["*selector*", "*safety*", "*fire*sel*"]},
+    },
+    "steyr_aug": {
+        "schema_version": "1.0",
+        "operating_system": "gas_short_stroke",
+        "display_name": "Steyr AUG",
+        "description": "Bullpup assault rifle — short-stroke gas piston, rotating bolt with 7 lugs",
+        "fire_modes": ["semi", "auto"],
+        "cyclic_rate_rpm": {"semi": None, "auto": 680},
+        "bones": [
+            {"name": "Weapon Root", "parent": None, "presence": "required", "movement_type": "static",
+             "description": "Outer receiver housing", "placement": "Place at center of the housing"},
+            {"name": "Gas Piston", "parent": "Weapon Root", "presence": "expected", "movement_type": "translate", "axis": "Y",
+             "description": "Short-stroke gas piston above barrel — 15mm stroke",
+             "placement": "Place at gas block above barrel",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_y": -0.015, "max_y": 0, "use_min_y": True, "use_max_y": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_z": 0, "max_z": 0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"carrier_travel_m": 0.015}},
+            {"name": "Bolt Carrier", "parent": "Weapon Root", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "description": "Bolt carrier group — 88mm rearward travel",
+             "placement": "Place at rear of bolt carrier, inside receiver",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_y": -0.088, "max_y": 0.003, "use_min_y": True, "use_max_y": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_z": 0, "max_z": 0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"carrier_travel_m": 0.088, "carrier_mass_kg": 0.28}},
+            {"name": "Bolt", "parent": "Bolt Carrier", "presence": "required", "movement_type": "rotate", "axis": "Y",
+             "description": "Rotating bolt with 7 lugs — 22.5 degree rotation to unlock",
+             "placement": "Place at bolt face, centered on bore axis",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_y": 0, "max_y": 0.393, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "drivers": [{"driven_property": "rotation_euler.y", "driver_bone": "Bolt Carrier", "driver_property": "location.y",
+                          "expression": "var * -4.46", "description": "Bolt rotates 22.5 degrees over 88mm carrier travel"}],
+             "parameters": {"rotation_degrees": 22.5, "lug_count": 7}},
+            {"name": "Trigger", "parent": "Weapon Root", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "description": "Progressive trigger — half-pull semi, full-pull auto",
+             "placement": "Place at trigger pin, forward of the grip",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0, "max_x": 0.262, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 15}},
+            {"name": "Magazine", "parent": "Weapon Root", "presence": "required", "movement_type": "translate", "axis": "Z",
+             "description": "Transparent polymer magazine behind the grip",
+             "placement": "Place at top of magazine well, behind the grip",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_z": -0.15, "max_z": 0, "use_min_z": True, "use_max_z": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_y": 0, "max_y": 0, "use_min_y": True, "use_max_y": True, "owner_space": "LOCAL"}]},
+            {"name": "Charging Handle", "parent": "Bolt Carrier", "presence": "expected", "movement_type": "translate", "axis": "Y",
+             "description": "Left-side folding charging handle",
+             "placement": "Place on left side, linked to bolt carrier"},
+        ],
+        "physics": {"bolt_carrier_mass_kg": 0.28, "buffer_spring_rate_n_per_m": 3200, "carrier_peak_velocity_m_per_s": 5.2},
+        "part_name_aliases": {"Bolt Carrier": ["*carrier*", "*bcg*"], "Bolt": ["*bolt*head*", "*bolt*face*"],
+                              "Gas Piston": ["*piston*", "*gas*"], "Trigger": ["*trigger*"],
+                              "Magazine": ["*mag*"], "Charging Handle": ["*charging*", "*cocking*"]},
+    },
+    "fn_fal": {
+        "schema_version": "1.0",
+        "operating_system": "gas_long_stroke",
+        "display_name": "FN FAL",
+        "description": "Battle rifle — long-stroke gas piston, tilting bolt lock",
+        "fire_modes": ["semi", "auto"],
+        "cyclic_rate_rpm": {"semi": None, "auto": 650},
+        "bones": [
+            {"name": "Weapon Root", "parent": None, "presence": "required", "movement_type": "static",
+             "description": "Lower receiver", "placement": "Place at base of lower receiver"},
+            {"name": "Upper Receiver", "parent": "Weapon Root", "presence": "required", "movement_type": "static",
+             "description": "Upper receiver / dust cover", "placement": "Place at top cover hinge"},
+            {"name": "Gas Piston", "parent": "Upper Receiver", "presence": "expected", "movement_type": "translate", "axis": "Y",
+             "description": "Long-stroke gas piston — 60mm stroke, connected to carrier",
+             "placement": "Place at gas block above barrel",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_y": -0.060, "max_y": 0, "use_min_y": True, "use_max_y": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_z": 0, "max_z": 0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"carrier_travel_m": 0.060}},
+            {"name": "Bolt Carrier", "parent": "Upper Receiver", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "description": "Bolt carrier — 105mm rearward travel",
+             "placement": "Place at rear of bolt carrier",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_y": -0.105, "max_y": 0.003, "use_min_y": True, "use_max_y": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_z": 0, "max_z": 0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"carrier_travel_m": 0.105, "carrier_mass_kg": 0.32}},
+            {"name": "Bolt", "parent": "Bolt Carrier", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "description": "Tilting bolt — rotates 25 degrees around X to unlock (NOT rotating bolt)",
+             "placement": "Place at bolt face",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0, "max_x": 0.436, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "drivers": [{"driven_property": "rotation_euler.x", "driver_bone": "Bolt Carrier", "driver_property": "location.y",
+                          "expression": "var * -4.15", "description": "Bolt tilts 25 degrees over carrier travel"}],
+             "parameters": {"rotation_degrees": 25}},
+            {"name": "Trigger", "parent": "Weapon Root", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "description": "Trigger — 14 degree rotation",
+             "placement": "Place at trigger pin hole in lower receiver",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0, "max_x": 0.244, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 14}},
+            {"name": "Selector", "parent": "Weapon Root", "presence": "expected", "movement_type": "rotate", "axis": "X",
+             "description": "Fire selector — Safe / Semi / Auto",
+             "placement": "Place on left side of lower receiver",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0, "max_x": 3.142, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 180}},
+            {"name": "Magazine", "parent": "Weapon Root", "presence": "required", "movement_type": "translate", "axis": "Z",
+             "description": "20-round detachable box magazine",
+             "placement": "Place at top of magazine well",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_z": -0.18, "max_z": 0, "use_min_z": True, "use_max_z": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_y": 0, "max_y": 0, "use_min_y": True, "use_max_y": True, "owner_space": "LOCAL"}]},
+            {"name": "Charging Handle", "parent": "Bolt Carrier", "presence": "expected", "movement_type": "translate", "axis": "Y",
+             "description": "Left-side charging handle",
+             "placement": "Place on left side, linked to bolt carrier"},
+        ],
+        "physics": {"bolt_carrier_mass_kg": 0.32, "buffer_spring_rate_n_per_m": 3800, "carrier_peak_velocity_m_per_s": 5.5},
+        "part_name_aliases": {"Bolt Carrier": ["*carrier*", "*bcg*"], "Bolt": ["*bolt*"], "Gas Piston": ["*piston*", "*gas*rod*"],
+                              "Trigger": ["*trigger*"], "Magazine": ["*mag*"], "Selector": ["*selector*", "*safety*"],
+                              "Charging Handle": ["*charging*", "*cocking*"]},
+    },
+    "remington_870": {
+        "schema_version": "1.0",
+        "operating_system": "pump_action",
+        "display_name": "Remington 870",
+        "description": "Pump-action shotgun — manual cycling via pump/forend",
+        "fire_modes": ["semi"],
+        "cyclic_rate_rpm": {"semi": None},
+        "bones": [
+            {"name": "Weapon Root", "parent": None, "presence": "required", "movement_type": "static",
+             "description": "Receiver body", "placement": "Place at center of receiver"},
+            {"name": "Pump", "parent": "Weapon Root", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "description": "Pump forend — 95mm rearward stroke cycles the action",
+             "placement": "Place at front of pump/forend",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_y": -0.095, "max_y": 0, "use_min_y": True, "use_max_y": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_z": 0, "max_z": 0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"carrier_travel_m": 0.095}},
+            {"name": "Bolt", "parent": "Pump", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "description": "Breech bolt — linked directly to pump via action bars",
+             "placement": "Place at bolt face",
+             "drivers": [{"driven_property": "location.y", "driver_bone": "Pump", "driver_property": "location.y",
+                          "expression": "var", "description": "Bolt follows pump 1:1"}]},
+            {"name": "Shell Lifter", "parent": "Weapon Root", "presence": "expected", "movement_type": "rotate", "axis": "X",
+             "description": "Shell lifter/carrier — pivots up to lift shell from magazine tube to chamber",
+             "placement": "Place at lifter pivot point in bottom of receiver",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -0.785, "max_x": 0, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "drivers": [{"driven_property": "rotation_euler.x", "driver_bone": "Pump", "driver_property": "location.y",
+                          "expression": "var * 8.25", "description": "Lifter rotates ~45 degrees over pump stroke"}],
+             "parameters": {"rotation_degrees": 45}},
+            {"name": "Trigger", "parent": "Weapon Root", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "description": "Trigger — 12 degree rotation",
+             "placement": "Place at trigger pin",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0, "max_x": 0.209, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 12}},
+            {"name": "Safety", "parent": "Weapon Root", "presence": "expected", "movement_type": "translate", "axis": "X",
+             "description": "Cross-bolt safety button — pushes side to side",
+             "placement": "Place at safety button behind trigger guard",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_x": -0.005, "max_x": 0.005, "use_min_x": True, "use_max_x": True,
+                              "min_y": 0, "max_y": 0, "use_min_y": True, "use_max_y": True,
+                              "min_z": 0, "max_z": 0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}]},
+        ],
+        "physics": {},
+        "part_name_aliases": {"Pump": ["*pump*", "*forend*", "*forearm*", "*slide*"], "Bolt": ["*bolt*", "*breech*"],
+                              "Shell Lifter": ["*lifter*", "*carrier*", "*elevator*"], "Trigger": ["*trigger*"],
+                              "Safety": ["*safety*", "*cross*bolt*"]},
+    },
+    "desert_eagle": {
+        "schema_version": "1.0",
+        "operating_system": "gas_rotating_bolt_pistol",
+        "display_name": "Desert Eagle",
+        "description": "Gas-operated semi-auto pistol with rotating bolt — unique among pistols",
+        "fire_modes": ["semi"],
+        "cyclic_rate_rpm": {"semi": None},
+        "bones": [
+            {"name": "Weapon Root", "parent": None, "presence": "required", "movement_type": "static",
+             "description": "Pistol frame/grip", "placement": "Place at frame center, above grip"},
+            {"name": "Slide", "parent": "Weapon Root", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "description": "Slide assembly — 55mm rearward travel under gas operation",
+             "placement": "Place at rear of slide",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_y": -0.055, "max_y": 0.002, "use_min_y": True, "use_max_y": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_z": 0, "max_z": 0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"carrier_travel_m": 0.055, "carrier_mass_kg": 0.40}},
+            {"name": "Bolt", "parent": "Slide", "presence": "required", "movement_type": "rotate", "axis": "Y",
+             "description": "Rotating bolt inside slide — 30 degree rotation to unlock",
+             "placement": "Place at bolt face inside slide",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_y": 0, "max_y": 0.524, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "drivers": [{"driven_property": "rotation_euler.y", "driver_bone": "Slide", "driver_property": "location.y",
+                          "expression": "var * -9.5", "description": "Bolt rotates 30 degrees over 55mm slide travel"}],
+             "parameters": {"rotation_degrees": 30}},
+            {"name": "Barrel", "parent": "Weapon Root", "presence": "expected", "movement_type": "static", "axis": "Y",
+             "description": "Fixed barrel — does not move (unlike most pistols)",
+             "placement": "Place at barrel, centered on bore axis"},
+            {"name": "Trigger", "parent": "Weapon Root", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "description": "Trigger — 18 degree rotation",
+             "placement": "Place at trigger pin",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0, "max_x": 0.314, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 18}},
+            {"name": "Hammer", "parent": "Weapon Root", "presence": "expected", "movement_type": "rotate", "axis": "X",
+             "description": "External hammer — 35 degree rotation to strike firing pin",
+             "placement": "Place at hammer pin, behind the slide",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -0.611, "max_x": 0, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 35}},
+            {"name": "Magazine", "parent": "Weapon Root", "presence": "required", "movement_type": "translate", "axis": "Z",
+             "description": "Single-stack magazine in the grip",
+             "placement": "Place at top of magazine, inside the grip",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_z": -0.12, "max_z": 0, "use_min_z": True, "use_max_z": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_y": 0, "max_y": 0, "use_min_y": True, "use_max_y": True, "owner_space": "LOCAL"}]},
+            {"name": "Safety", "parent": "Weapon Root", "presence": "expected", "movement_type": "rotate", "axis": "X",
+             "description": "Ambidextrous thumb safety — 45 degree rotation",
+             "placement": "Place on left side of frame, above grip",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0, "max_x": 0.785, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 45}},
+        ],
+        "physics": {"bolt_carrier_mass_kg": 0.40, "buffer_spring_rate_n_per_m": 2200},
+        "part_name_aliases": {"Slide": ["*slide*", "*upper*"], "Bolt": ["*bolt*", "*rotating*bolt*"],
+                              "Barrel": ["*barrel*"], "Trigger": ["*trigger*"], "Hammer": ["*hammer*"],
+                              "Magazine": ["*mag*"], "Safety": ["*safety*", "*thumb*safety*"]},
+    },
+    "barrett_m82": {
+        "schema_version": "1.0",
+        "operating_system": "short_recoil_rotating_bolt",
+        "display_name": "Barrett M82",
+        "description": "Semi-auto anti-materiel rifle — short recoil with rotating bolt, .50 BMG",
+        "fire_modes": ["semi"],
+        "cyclic_rate_rpm": {"semi": None},
+        "bones": [
+            {"name": "Weapon Root", "parent": None, "presence": "required", "movement_type": "static",
+             "description": "Lower receiver / frame", "placement": "Place at frame center"},
+            {"name": "Upper Receiver", "parent": "Weapon Root", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "description": "Upper receiver recoils 25mm rearward (short recoil operation)",
+             "placement": "Place at front of upper receiver",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_y": -0.025, "max_y": 0, "use_min_y": True, "use_max_y": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_z": 0, "max_z": 0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"carrier_travel_m": 0.025}},
+            {"name": "Barrel", "parent": "Upper Receiver", "presence": "expected", "movement_type": "static", "axis": "Y",
+             "description": "Fixed to upper receiver — recoils with it",
+             "placement": "Place at barrel, along bore axis"},
+            {"name": "Bolt Carrier", "parent": "Upper Receiver", "presence": "required", "movement_type": "translate", "axis": "Y",
+             "description": "Bolt carrier — 130mm rearward travel relative to upper",
+             "placement": "Place at rear of bolt carrier",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_y": -0.130, "max_y": 0.003, "use_min_y": True, "use_max_y": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_z": 0, "max_z": 0, "use_min_z": True, "use_max_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"carrier_travel_m": 0.130, "carrier_mass_kg": 0.45}},
+            {"name": "Bolt", "parent": "Bolt Carrier", "presence": "required", "movement_type": "rotate", "axis": "Y",
+             "description": "Rotating bolt — 22 degree rotation to unlock",
+             "placement": "Place at bolt face",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_y": 0, "max_y": 0.384, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "drivers": [{"driven_property": "rotation_euler.y", "driver_bone": "Bolt Carrier", "driver_property": "location.y",
+                          "expression": "var * -2.95", "description": "Bolt rotates 22 degrees over 130mm carrier travel"}],
+             "parameters": {"rotation_degrees": 22}},
+            {"name": "Trigger", "parent": "Weapon Root", "presence": "required", "movement_type": "rotate", "axis": "X",
+             "description": "Trigger — 10 degree rotation",
+             "placement": "Place at trigger pin",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": 0, "max_x": 0.175, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 10}},
+            {"name": "Magazine", "parent": "Weapon Root", "presence": "required", "movement_type": "translate", "axis": "Z",
+             "description": "10-round detachable box magazine",
+             "placement": "Place at top of magazine well",
+             "constraints": [{"type": "LIMIT_LOCATION", "min_z": -0.18, "max_z": 0, "use_min_z": True, "use_max_z": True,
+                              "min_x": 0, "max_x": 0, "use_min_x": True, "use_max_x": True,
+                              "min_y": 0, "max_y": 0, "use_min_y": True, "use_max_y": True, "owner_space": "LOCAL"}]},
+            {"name": "Charging Handle", "parent": "Bolt Carrier", "presence": "expected", "movement_type": "translate", "axis": "Y",
+             "description": "Charging handle on top of receiver",
+             "placement": "Place at top of receiver, linked to bolt carrier"},
+            {"name": "Muzzle Brake", "parent": "Barrel", "presence": "optional", "movement_type": "static", "axis": "Y",
+             "description": "Large arrowhead muzzle brake",
+             "placement": "Place at barrel tip"},
+            {"name": "Bipod Left", "parent": "Weapon Root", "presence": "optional", "movement_type": "rotate", "axis": "X",
+             "description": "Left bipod leg — folds 90 degrees",
+             "placement": "Place at left bipod hinge under receiver",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -1.571, "max_x": 0, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 90}},
+            {"name": "Bipod Right", "parent": "Weapon Root", "presence": "optional", "movement_type": "rotate", "axis": "X",
+             "description": "Right bipod leg — folds 90 degrees",
+             "placement": "Place at right bipod hinge under receiver",
+             "constraints": [{"type": "LIMIT_ROTATION", "min_x": -1.571, "max_x": 0, "use_limit_x": True, "use_limit_y": True, "use_limit_z": True, "owner_space": "LOCAL"}],
+             "parameters": {"rotation_degrees": 90}},
+        ],
+        "physics": {"bolt_carrier_mass_kg": 0.45, "buffer_spring_rate_n_per_m": 5500, "carrier_peak_velocity_m_per_s": 4.8},
+        "part_name_aliases": {"Upper Receiver": ["*upper*"], "Barrel": ["*barrel*"],
+                              "Bolt Carrier": ["*carrier*", "*bcg*"], "Bolt": ["*bolt*head*", "*bolt*"],
+                              "Trigger": ["*trigger*"], "Magazine": ["*mag*"],
+                              "Charging Handle": ["*charging*", "*ch*"], "Muzzle Brake": ["*muzzle*", "*brake*"],
+                              "Bipod Left": ["*bipod*l*", "*left*leg*"], "Bipod Right": ["*bipod*r*", "*right*leg*"]},
     },
 }
 
@@ -1796,6 +2115,121 @@ def _find_mesh_for_bone_definitive(bone_name, mesh_objects, aliases=None):
     return None
 
 
+def clean_existing_rig(context):
+    """Remove existing WeaponRig armature and unbind all meshes before rebuild."""
+    armature_obj = None
+    for obj in context.scene.objects:
+        if obj.type == "ARMATURE" and (obj.get("weaponrig") or obj.get("weaponrig_config")):
+            armature_obj = obj
+            break
+
+    if armature_obj is None:
+        return
+
+    # Ensure OBJECT mode
+    if context.object and context.object.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+    # 1. Remove all drivers (snapshot list first — never remove while iterating)
+    if armature_obj.animation_data:
+        driver_refs = [(fc.data_path, fc.array_index) for fc in armature_obj.animation_data.drivers]
+        for data_path, array_index in driver_refs:
+            try:
+                armature_obj.driver_remove(data_path, array_index)
+            except TypeError:
+                pass
+
+    # 2. Unparent mesh children, remove vertex groups + armature modifiers
+    children = [c for c in armature_obj.children if c.type == "MESH"]
+    for child in children:
+        # Remove armature modifiers (snapshot names first)
+        arm_mod_names = [m.name for m in child.modifiers if m.type == "ARMATURE"]
+        for mname in arm_mod_names:
+            mod = child.modifiers.get(mname)
+            if mod:
+                child.modifiers.remove(mod)
+
+        # Remove all vertex groups
+        child.vertex_groups.clear()
+
+        # Unparent keeping world transform
+        world_mat = child.matrix_world.copy()
+        child.parent = None
+        child.matrix_world = world_mat
+
+    # 3. Remove constraints (enter pose mode briefly)
+    context.view_layer.objects.active = armature_obj
+    armature_obj.select_set(True)
+    bpy.ops.object.mode_set(mode="POSE")
+    for pb in armature_obj.pose.bones:
+        while pb.constraints:
+            pb.constraints.remove(pb.constraints[0])
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    # 4. Delete the armature
+    bpy.data.objects.remove(armature_obj, do_unlink=True)
+
+    # 5. Clear scene tracking
+    context.scene.weaponrig_added_bones = ""
+    context.scene.weaponrig_skipped_bones = ""
+
+
+def pre_build_audit(context, mesh_objects):
+    """Audit scene and meshes before build. Returns (fixed, warnings, errors)."""
+    fixed = []
+    warnings = []
+    errors = []
+
+    if not mesh_objects:
+        errors.append("No mesh objects found")
+        return fixed, warnings, errors
+
+    for obj in mesh_objects:
+        # Apply transforms if needed
+        s = obj.scale
+        r = obj.rotation_euler
+        if (abs(s.x - 1.0) > 0.001 or abs(s.y - 1.0) > 0.001 or abs(s.z - 1.0) > 0.001
+                or abs(r.x) > 0.001 or abs(r.y) > 0.001 or abs(r.z) > 0.001):
+            bpy.ops.object.select_all(action="DESELECT")
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+            obj.select_set(False)
+            fixed.append(f"Applied transforms on '{obj.name}'")
+
+        # Set origin to geometry center
+        bpy.ops.object.select_all(action="DESELECT")
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+        bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="BOUNDS")
+        obj.select_set(False)
+
+        # Remove shape keys
+        if obj.data.shape_keys:
+            obj.shape_key_clear()
+            fixed.append(f"Removed shape keys from '{obj.name}'")
+
+        # Problem modifiers
+        for mod in obj.modifiers:
+            if mod.type == "EDGE_SPLIT":
+                warnings.append(f"'{obj.name}': Edge Split modifier may create duplicate verts")
+            if mod.type == "ARMATURE":
+                warnings.append(f"'{obj.name}': existing Armature modifier will be reconfigured")
+
+    # Scene settings
+    if bpy.context.scene.render.fps not in (24, 30, 60):
+        warnings.append(f"Scene is {bpy.context.scene.render.fps}fps — UE5 defaults to 30fps")
+
+    unit_scale = bpy.context.scene.unit_settings.scale_length
+    if abs(unit_scale - 1.0) > 0.001:
+        warnings.append(f"Scene unit scale is {unit_scale} — FBX may produce wrong scale (recommended: 1.0)")
+
+    if bpy.app.version == (5, 0, 0):
+        errors.append("Blender 5.0.0 has a crash bug when adding bones — update to 5.0.1+")
+
+    return fixed, warnings, errors
+
+
 def build_weapon_rig(context, config_bones, mesh_objects, part_aliases=None):
     """
     Build a complete weapon rig. Handles:
@@ -2062,6 +2496,9 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        # Clean existing rig first (rebuild safety)
+        clean_existing_rig(context)
+
         weapon_type = context.scene.weaponrig_weapon_type
         if weapon_type not in WEAPON_CONFIGS:
             self.report({"ERROR"}, f"Unknown weapon type: {weapon_type}")
@@ -2074,8 +2511,16 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
         mesh_objects = [o for o in context.selected_objects if o.type == "MESH"]
         if not mesh_objects:
             mesh_objects = [o for o in context.scene.objects if o.type == "MESH"]
-        if not mesh_objects:
-            self.report({"ERROR"}, "No mesh objects found. Import or select weapon mesh first.")
+
+        # Pre-build audit (auto-fix what we can, warn, block on errors)
+        audit_fixed, audit_warnings, audit_errors = pre_build_audit(context, mesh_objects)
+        for fix in audit_fixed:
+            self.report({"INFO"}, f"Auto-fixed: {fix}")
+        for warn in audit_warnings:
+            self.report({"WARNING"}, warn)
+        if audit_errors:
+            for err in audit_errors:
+                self.report({"ERROR"}, err)
             return {"CANCELLED"}
 
         # Convert config to dict format expected by build_weapon_rig
@@ -2143,6 +2588,12 @@ class WEAPONRIG_OT_add_all_bones(bpy.types.Operator):
             bone_defs.append(bd)
 
         result = build_weapon_rig(context, bone_defs, mesh_objects, aliases)
+
+        # Store build results on armature for the results panel
+        arm = result.get("armature_obj")
+        if arm:
+            arm["weaponrig_config"] = weapon_type
+            arm["weaponrig_build_issues"] = json.dumps(result.get("issues", []))
 
         # Track added bones
         added_list = _get_added_list(context)
@@ -2890,6 +3341,63 @@ class WEAPONRIG_PT_cycle(bpy.types.Panel):
         layout.label(text="Drag to simulate firing cycle", icon="PLAY")
 
 
+class WEAPONRIG_PT_build_results(bpy.types.Panel):
+    """Build Results — post-build verification panel"""
+    bl_label = "Build Results"
+    bl_idname = "WEAPONRIG_PT_build_results"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "WeaponRig"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context):
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig_config"):
+                return True
+        return False
+
+    def draw(self, context):
+        layout = self.layout
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig_config"):
+                arm_obj = obj
+                break
+        if not arm_obj:
+            return
+
+        config_name = arm_obj.get("weaponrig_config", "unknown")
+        layout.label(text=f"Weapon: {config_name}", icon="ARMATURE_DATA")
+
+        bone_count = len(arm_obj.data.bones)
+        bound = sum(1 for o in arm_obj.children if o.type == "MESH")
+        driver_count = len(arm_obj.animation_data.drivers) if arm_obj.animation_data else 0
+        con_count = sum(len(pb.constraints) for pb in arm_obj.pose.bones)
+
+        col = layout.column(align=True)
+        col.label(text=f"Bones: {bone_count}", icon="BONE_DATA")
+        col.label(text=f"Bound meshes: {bound}", icon="MESH_DATA")
+        col.label(text=f"Drivers: {driver_count}", icon="DRIVER")
+        col.label(text=f"Constraints: {con_count}", icon="CONSTRAINT")
+
+        raw_issues = arm_obj.get("weaponrig_build_issues", "[]")
+        try:
+            issues = json.loads(raw_issues) if isinstance(raw_issues, str) else []
+        except (json.JSONDecodeError, TypeError):
+            issues = []
+
+        if issues:
+            box = layout.box()
+            box.label(text=f"Issues ({len(issues)}):", icon="ERROR")
+            for issue in issues[:10]:
+                row = box.row()
+                row.alert = True
+                row.label(text=str(issue)[:80], icon="DOT")
+            if len(issues) > 10:
+                box.label(text=f"... and {len(issues) - 10} more")
+        else:
+            layout.label(text="No issues detected", icon="CHECKMARK")
 
 
 # ===================================================================
@@ -4332,6 +4840,7 @@ _classes = (
     WEAPONRIG_OT_play_cycle,
     WEAPONRIG_PT_main,
     WEAPONRIG_PT_cycle,
+    WEAPONRIG_PT_build_results,
 )
 
 
