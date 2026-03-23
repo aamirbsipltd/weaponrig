@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 25, 0),
+    "version": (0, 26, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -2243,6 +2243,388 @@ def pre_build_audit(context, mesh_objects):
     return fixed, warnings, errors
 
 
+# ===================================================================
+# AUTO VERTEX GROUP ASSIGNMENT (v0.26)
+# Handles 4 mesh states: separated named, separated bad names,
+# fused with materials, fused single material (flood fill)
+# ===================================================================
+
+BONE_ALIASES = {
+    "weapon_root": ["lower_receiver", "frame", "receiver", "body", "gun_body", "weapon_body", "main_body", "lower", "upper_receiver", "main"],
+    "bolt_carrier": ["bcg", "bolt_carrier_group", "carrier", "bc", "slide", "bolt_assembly", "operating_rod", "op_rod", "breech_block"],
+    "bolt": ["bolt_head", "bolt_face", "rotating_bolt", "locking_bolt", "bolt_body", "breech"],
+    "trigger": ["trigger_bar", "trigger_mechanism", "trig", "trigger_shoe", "trigger_blade"],
+    "magazine": ["mag", "clip", "magazine_body", "mag_body", "ammo", "magazine_housing"],
+    "hammer": ["hammer_assembly", "striker", "firing_mechanism"],
+    "barrel": ["barrel_assembly", "outer_barrel", "bbl", "barrel_body", "inner_barrel"],
+    "charging_handle": ["ch", "cocking_handle", "handle", "ch_assembly", "charging"],
+    "selector": ["safety", "fire_selector", "selector_switch", "safety_selector", "fire_mode"],
+    "dust_cover": ["ejection_port_cover", "port_cover", "dc"],
+    "forward_assist": ["fa", "assist", "fwd_assist"],
+    "bolt_release": ["bolt_catch", "bolt_stop", "catch", "release", "mag_release"],
+    "pump_handle": ["pump", "forend", "slide_handle", "pump_grip", "action_bar"],
+    "bolt_handle": ["bolt_knob", "handle_bolt", "action_handle", "bolt_lever"],
+    "cylinder": ["revolver_cylinder", "cyl", "wheel"],
+    "grip": ["pistol_grip", "grip_panel", "handle_grip"],
+    "stock": ["buttstock", "butt", "stock_assembly", "buffer_tube"],
+    "handguard": ["rail", "foregrip_rail", "quad_rail", "mlok_rail", "heat_shield"],
+    "muzzle_device": ["suppressor", "flash_hider", "compensator", "muzzle_brake", "muzzle"],
+    "scope": ["optic", "sight", "red_dot", "holographic", "rear_sight", "front_sight"],
+    "gas_block": ["gas_tube", "gas_system"],
+}
+
+
+def _vg_clean_name(name):
+    """Normalize name for matching."""
+    return name.lower().replace(" ", "_").replace(".", "_").replace("-", "_")
+
+
+def _vg_build_alias_map(config_bones=None):
+    """Build bone_name -> [aliases] from defaults + config."""
+    amap = {k: [a.lower() for a in v] for k, v in BONE_ALIASES.items()}
+    if config_bones:
+        for b in config_bones:
+            bn = (b["name"] if isinstance(b, dict) else b.name).lower().replace(" ", "_")
+            aliases = b.get("aliases", []) if isinstance(b, dict) else []
+            if bn and aliases:
+                existing = amap.get(bn, [])
+                amap[bn] = list(set(existing + [a.lower().strip("*") for a in aliases]))
+    return amap
+
+
+def _vg_assign_all(mesh_obj, bone_name):
+    """Assign ALL face-connected verts of mesh to one vertex group."""
+    existing = mesh_obj.vertex_groups.get(bone_name)
+    if existing:
+        mesh_obj.vertex_groups.remove(existing)
+    vg = mesh_obj.vertex_groups.new(name=bone_name)
+    fv = set()
+    for p in mesh_obj.data.polygons:
+        for vi in p.vertices:
+            fv.add(vi)
+    vg.add(list(fv) if fv else list(range(len(mesh_obj.data.vertices))), 1.0, "REPLACE")
+
+
+def _vg_ensure_armature(mesh_obj, arm_obj):
+    """Add Armature modifier if not present."""
+    for mod in mesh_obj.modifiers:
+        if mod.type == "ARMATURE" and mod.object == arm_obj:
+            mod.use_vertex_groups = True
+            mod.use_bone_envelopes = False
+            return
+    mod = mesh_obj.modifiers.new(name="WeaponRig", type="ARMATURE")
+    mod.object = arm_obj
+    mod.use_vertex_groups = True
+    mod.use_bone_envelopes = False
+    if mesh_obj.parent != arm_obj:
+        mesh_obj.parent = arm_obj
+        mesh_obj.parent_type = "OBJECT"
+        mesh_obj.matrix_parent_inverse = arm_obj.matrix_world.inverted()
+
+
+def _vg_find_islands(bm):
+    """BFS to find disconnected mesh islands. Returns list of sets of vert indices."""
+    visited = set()
+    islands = []
+    bm.verts.ensure_lookup_table()
+    for v in bm.verts:
+        if v.index in visited:
+            continue
+        island = set()
+        queue = [v]
+        while queue:
+            cur = queue.pop(0)
+            if cur.index in visited:
+                continue
+            visited.add(cur.index)
+            island.add(cur.index)
+            for e in cur.link_edges:
+                other = e.other_vert(cur)
+                if other.index not in visited:
+                    queue.append(other)
+        if island:
+            islands.append(island)
+    return islands
+
+
+def auto_assign_vertex_groups(arm_obj, mesh_objects, config_bones=None):
+    """Master function: auto-assign vertex groups for weapon meshes.
+    Handles 4 states: separated objects, materials, islands, flood fill."""
+    report = {"assigned": [], "unmatched_bones": [], "warnings": []}
+
+    bone_names = [b.name for b in arm_obj.data.bones]
+    bone_pos = {b.name: arm_obj.matrix_world @ b.head_local for b in arm_obj.data.bones}
+    alias_map = _vg_build_alias_map(config_bones)
+
+    valid = [o for o in mesh_objects if o.type == "MESH" and len(o.data.vertices) > 0]
+    if not valid:
+        report["warnings"].append("No valid mesh objects found")
+        return report
+
+    if len(valid) > 1:
+        _vg_strategy_separate(arm_obj, valid, bone_names, bone_pos, alias_map, report)
+    else:
+        obj = valid[0]
+        mat_count = len([s for s in obj.material_slots if s.material])
+        if mat_count > 1:
+            _vg_strategy_materials(arm_obj, obj, bone_names, bone_pos, alias_map, report)
+        else:
+            # Check islands
+            bm = bmesh.new()
+            try:
+                bm.from_mesh(obj.data)
+                islands = _vg_find_islands(bm)
+            finally:
+                bm.free()
+            if len(islands) > 1 and len(islands) <= len(bone_names) * 2:
+                _vg_strategy_islands(arm_obj, obj, bone_names, bone_pos, islands, report)
+            else:
+                _vg_strategy_flood(arm_obj, obj, bone_names, bone_pos, report)
+
+    assigned_names = {a[0] for a in report["assigned"]}
+    report["unmatched_bones"] = [bn for bn in bone_names if bn not in assigned_names]
+    return report
+
+
+def _vg_strategy_separate(arm_obj, meshes, bone_names, bone_pos, alias_map, report):
+    """Match separate mesh objects to bones by name/alias/proximity."""
+    matched = {}
+    remaining = list(meshes)
+
+    # Pass 1-3: name, contains, alias
+    for obj in list(remaining):
+        nc = _vg_clean_name(obj.name)
+        for bn in bone_names:
+            bnc = _vg_clean_name(bn)
+            if bn not in matched:
+                if nc == bnc or bnc in nc or nc in bnc:
+                    matched[bn] = obj
+                    remaining.remove(obj)
+                    break
+                if bnc in alias_map:
+                    for al in alias_map[bnc]:
+                        if al in nc or nc in al:
+                            matched[bn] = obj
+                            remaining.remove(obj)
+                            break
+                if bn in matched:
+                    break
+
+    # Pass 4: KDTree proximity
+    if remaining:
+        unmatched = [bn for bn in bone_names if bn not in matched and bn in bone_pos]
+        if unmatched:
+            kd = KDTree(len(unmatched))
+            for i, bn in enumerate(unmatched):
+                kd.insert(bone_pos[bn], i)
+            kd.balance()
+            for obj in list(remaining):
+                center = _get_world_center(obj)
+                _, idx, dist = kd.find(center)
+                if dist < 0.5:
+                    bn = unmatched[idx]
+                    if bn not in matched:
+                        matched[bn] = obj
+                        remaining.remove(obj)
+
+    for bn, obj in matched.items():
+        _vg_assign_all(obj, bn)
+        _vg_ensure_armature(obj, arm_obj)
+        report["assigned"].append((bn, obj.name, len(obj.data.vertices), "object"))
+
+
+def _vg_strategy_materials(arm_obj, obj, bone_names, bone_pos, alias_map, report):
+    """Match materials to bones, assign face verts per material."""
+    verts_per_slot = defaultdict(set)
+    for poly in obj.data.polygons:
+        for vi in poly.vertices:
+            verts_per_slot[poly.material_index].add(vi)
+
+    slot_bone = {}
+    # Name + alias match
+    for si, slot in enumerate(obj.material_slots):
+        if not slot.material:
+            continue
+        mc = _vg_clean_name(slot.material.name)
+        for bn in bone_names:
+            bnc = _vg_clean_name(bn)
+            if bn not in slot_bone.values():
+                if bnc in mc or mc in bnc:
+                    slot_bone[si] = bn
+                    break
+                if bnc in alias_map:
+                    for al in alias_map[bnc]:
+                        if al in mc or mc in al:
+                            slot_bone[si] = bn
+                            break
+                if si in slot_bone:
+                    break
+
+    # Proximity for unmatched
+    unm_slots = [i for i in range(len(obj.material_slots)) if i not in slot_bone and i in verts_per_slot]
+    unm_bones = [bn for bn in bone_names if bn not in slot_bone.values() and bn in bone_pos]
+    if unm_slots and unm_bones:
+        kd = KDTree(len(unm_bones))
+        for i, bn in enumerate(unm_bones):
+            kd.insert(bone_pos[bn], i)
+        kd.balance()
+        for si in unm_slots:
+            center = Vector((0, 0, 0))
+            cnt = 0
+            for poly in obj.data.polygons:
+                if poly.material_index == si:
+                    center += obj.matrix_world @ poly.center
+                    cnt += 1
+            if cnt > 0:
+                center /= cnt
+                _, idx, dist = kd.find(center)
+                if dist < 0.3 and unm_bones[idx] not in slot_bone.values():
+                    slot_bone[si] = unm_bones[idx]
+
+    obj.vertex_groups.clear()
+    for si, bn in slot_bone.items():
+        if si in verts_per_slot:
+            vg = obj.vertex_groups.new(name=bn)
+            vg.add(list(verts_per_slot[si]), 1.0, "REPLACE")
+            report["assigned"].append((bn, obj.name, len(verts_per_slot[si]), "material"))
+    _vg_ensure_armature(obj, arm_obj)
+
+
+def _vg_strategy_islands(arm_obj, obj, bone_names, bone_pos, islands, report):
+    """Match disconnected islands to nearest bones."""
+    bone_list = [(bn, bone_pos[bn]) for bn in bone_names if bn in bone_pos]
+    if not bone_list:
+        return
+
+    kd = KDTree(len(bone_list))
+    for i, (bn, pos) in enumerate(bone_list):
+        kd.insert(pos, i)
+    kd.balance()
+
+    island_centers = []
+    for island_verts in islands:
+        center = Vector((0, 0, 0))
+        for vi in island_verts:
+            center += obj.matrix_world @ obj.data.vertices[vi].co
+        center /= max(len(island_verts), 1)
+        island_centers.append(center)
+
+    obj.vertex_groups.clear()
+    used = set()
+    scored = []
+    for isl_idx, center in enumerate(island_centers):
+        _, b_idx, dist = kd.find(center)
+        scored.append((dist, isl_idx, bone_list[b_idx][0]))
+    scored.sort()
+
+    for dist, isl_idx, bn in scored:
+        if bn in used:
+            for _, b_idx, d in kd.find_n(island_centers[isl_idx], len(bone_list)):
+                candidate = bone_list[b_idx][0]
+                if candidate not in used:
+                    bn = candidate
+                    dist = d
+                    break
+            else:
+                continue
+        if bn not in used and dist < 0.5:
+            vg = obj.vertex_groups.new(name=bn)
+            vg.add(list(islands[isl_idx]), 1.0, "REPLACE")
+            used.add(bn)
+            report["assigned"].append((bn, obj.name, len(islands[isl_idx]), "island"))
+    _vg_ensure_armature(obj, arm_obj)
+
+
+def _vg_strategy_flood(arm_obj, obj, bone_names, bone_pos, report,
+                        angle_threshold=40.0, max_radius=0.25):
+    """Flood fill from each bone's nearest vertex, bounded by normals + distance."""
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+
+        world_co = [obj.matrix_world @ v.co for v in bm.verts]
+        vert_kd = KDTree(len(bm.verts))
+        for i, co in enumerate(world_co):
+            vert_kd.insert(co, i)
+        vert_kd.balance()
+
+        threshold_rad = math.radians(angle_threshold)
+        face_owner = {}
+        bone_faces = defaultdict(set)
+
+        # Sort bones: inner first
+        mesh_center = sum(world_co, Vector()) / max(len(world_co), 1)
+        sorted_bones = sorted(
+            [bn for bn in bone_names if bn in bone_pos],
+            key=lambda b: (bone_pos[b] - mesh_center).length)
+
+        for bn in sorted_bones:
+            bp = bone_pos[bn]
+            _, seed_vi, _ = vert_kd.find(bp)
+            seed_vert = bm.verts[seed_vi]
+            if not seed_vert.link_faces:
+                continue
+
+            seed_face = seed_vert.link_faces[0]
+            seed_normal = seed_face.normal.copy()
+            visited = set()
+            queue = [seed_face]
+
+            while queue:
+                face = queue.pop(0)
+                fi = face.index
+                if fi in visited or fi in face_owner:
+                    continue
+                visited.add(fi)
+
+                if seed_normal.length > 0.001 and face.normal.length > 0.001:
+                    if face.normal.angle(seed_normal, 3.14159) > threshold_rad:
+                        continue
+
+                fc = obj.matrix_world @ face.calc_center_median()
+                if (fc - bp).length > max_radius:
+                    continue
+
+                face_owner[fi] = bn
+                bone_faces[bn].add(fi)
+
+                for edge in face.edges:
+                    for nb in edge.link_faces:
+                        if nb.index not in visited:
+                            queue.append(nb)
+
+        # Assign unowned faces to nearest bone
+        all_fi = set(range(len(bm.faces)))
+        unassigned = all_fi - set(face_owner.keys())
+        if unassigned and bone_pos:
+            bone_kd = KDTree(len(bone_pos))
+            bl = list(bone_pos.items())
+            for i, (bn, p) in enumerate(bl):
+                bone_kd.insert(p, i)
+            bone_kd.balance()
+            for fi in unassigned:
+                fc = obj.matrix_world @ bm.faces[fi].calc_center_median()
+                _, idx, _ = bone_kd.find(fc)
+                bone_faces[bl[idx][0]].add(fi)
+
+        obj.vertex_groups.clear()
+        for bn, fset in bone_faces.items():
+            if not fset:
+                continue
+            vset = set()
+            for fi in fset:
+                for v in bm.faces[fi].verts:
+                    vset.add(v.index)
+            vg = obj.vertex_groups.new(name=bn)
+            vg.add(list(vset), 1.0, "REPLACE")
+            report["assigned"].append((bn, obj.name, len(vset), "flood"))
+    finally:
+        bm.free()
+    _vg_ensure_armature(obj, arm_obj)
+
+
 def build_weapon_rig(context, config_bones, mesh_objects, part_aliases=None):
     """
     Build a complete weapon rig. Handles:
@@ -2539,78 +2921,15 @@ def build_weapon_rig(context, config_bones, mesh_objects, part_aliases=None):
             if vg:
                 obj.vertex_groups.remove(vg)
 
-    bound = 0
-    bound_meshes = set()  # track which meshes got armature modifier
-
-    if fused_mesh_regions:
-        # FUSED MESH PATH: assign per-bone vertex groups from face regions
-        target_mesh = mesh_objects[0]
-        polys = target_mesh.data.polygons
-
-        # Clear all existing vertex groups first
-        target_mesh.vertex_groups.clear()
-
-        for bname, face_set in fused_mesh_regions.items():
-            vg = target_mesh.vertex_groups.new(name=bname)
-            vert_ids = set()
-            for fi in face_set:
-                if fi < len(polys):
-                    for vi in polys[fi].vertices:
-                        vert_ids.add(vi)
-            if vert_ids:
-                vg.add(list(vert_ids), 1.0, "REPLACE")
-                bound += 1
-
-        # One Armature modifier for the single mesh
-        am = None
-        for mod in target_mesh.modifiers:
-            if mod.type == "ARMATURE":
-                am = mod
-                break
-        if not am:
-            am = target_mesh.modifiers.new(name="WeaponRig", type="ARMATURE")
-        am.object = armature_obj
-        am.use_vertex_groups = True
-        am.use_bone_envelopes = False
-        am.show_viewport = False
-        am.show_viewport = True
-        target_mesh.data.update()
-        target_mesh.parent = armature_obj
-        target_mesh.parent_type = "OBJECT"
-        target_mesh.matrix_parent_inverse = armature_obj.matrix_world.inverted()
-
-    else:
-        # SEPARATED MESH PATH: one vertex group per mesh object (original behavior)
-        for bname, mobj in bone_mesh_map.items():
-            evg = mobj.vertex_groups.get(bname)
-            if evg:
-                mobj.vertex_groups.remove(evg)
-            vg = mobj.vertex_groups.new(name=bname)
-            fv = set()
-            for p in mobj.data.polygons:
-                for vi in p.vertices:
-                    fv.add(vi)
-            vg.add(list(fv) if fv else list(range(len(mobj.data.vertices))), 1.0, "REPLACE")
-
-            if id(mobj) not in bound_meshes:
-                am = None
-                for mod in mobj.modifiers:
-                    if mod.type == "ARMATURE":
-                        am = mod
-                        break
-                if not am:
-                    am = mobj.modifiers.new(name="WeaponRig", type="ARMATURE")
-                am.object = armature_obj
-                am.use_vertex_groups = True
-                am.use_bone_envelopes = False
-                am.show_viewport = False
-                am.show_viewport = True
-                mobj.data.update()
-                mobj.parent = armature_obj
-                mobj.parent_type = "OBJECT"
-                mobj.matrix_parent_inverse = armature_obj.matrix_world.inverted()
-                bound_meshes.add(id(mobj))
-            bound += 1
+    # PHASE 4: AUTO VERTEX GROUP ASSIGNMENT (v0.26)
+    # Handles all 4 mesh states: separated named, bad names, materials, fused
+    vg_result = auto_assign_vertex_groups(armature_obj, mesh_objects, config_bones)
+    bound = len(vg_result["assigned"])
+    for a in vg_result["assigned"]:
+        issues.append(f"VG: '{a[0]}' ← {a[2]} verts ({a[3]})")
+    issues.extend(vg_result["warnings"])
+    if vg_result["unmatched_bones"]:
+        issues.append(f"Unmatched bones: {', '.join(vg_result['unmatched_bones'])}")
 
     # PHASE 5: FORCE EVALUATION
     armature_obj.data.update_tag()
@@ -5651,6 +5970,153 @@ class WEAPONRIG_OT_validate_export(bpy.types.Operator):
 
 
 # ===================================================================
+# AUTO VERTEX GROUP OPERATORS (v0.26)
+# ===================================================================
+
+class WEAPONRIG_OT_auto_assign_vg(bpy.types.Operator):
+    """Auto-assign vertex groups based on bone positions and mesh analysis"""
+    bl_idname = "weaponrig.auto_assign_vg"
+    bl_label = "Auto-Assign Vertex Groups"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        arm_obj = None
+        for obj in context.scene.objects:
+            if obj.type == "ARMATURE" and obj.get("weaponrig"):
+                arm_obj = obj
+                break
+        if not arm_obj:
+            self.report({"ERROR"}, "No WeaponRig armature found")
+            return {"CANCELLED"}
+
+        meshes = [c for c in arm_obj.children if c.type == "MESH"]
+        if not meshes:
+            meshes = [o for o in context.scene.objects if o.type == "MESH"]
+        if not meshes:
+            self.report({"ERROR"}, "No mesh objects found")
+            return {"CANCELLED"}
+
+        result = auto_assign_vertex_groups(arm_obj, meshes)
+        n = len(result["assigned"])
+        self.report({"INFO"}, f"Assigned {n} vertex groups")
+        if result["unmatched_bones"]:
+            self.report({"WARNING"}, f"Unmatched: {', '.join(result['unmatched_bones'])}")
+        return {"FINISHED"}
+
+
+class WEAPONRIG_OT_generate_test(bpy.types.Operator):
+    """Generate a test scene with weapon armature and mesh parts"""
+    bl_idname = "weaponrig.generate_test"
+    bl_label = "Generate Test Scene"
+    bl_options = {"REGISTER", "UNDO"}
+
+    test_type: bpy.props.EnumProperty(
+        name="Scenario",
+        items=[
+            ("SEP_NAMED", "Separated + named", "Multiple objects with correct names"),
+            ("SEP_BAD", "Separated + bad names", "Objects named Cube.001 etc"),
+            ("FUSED_MAT", "Fused + materials", "Single mesh, material per part"),
+            ("FUSED_ISLAND", "Fused + islands", "Single mesh, disconnected components"),
+            ("FUSED_SINGLE", "Fused + single", "Truly fused connected mesh"),
+        ],
+        default="SEP_NAMED",
+    )
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        bpy.ops.object.select_all(action="SELECT")
+        bpy.ops.object.delete(use_global=False)
+
+        parts = [
+            ("Weapon Root", Vector((0, 0, 0)), Vector((0.04, 0.20, 0.06))),
+            ("Bolt Carrier", Vector((0, 0.02, 0.01)), Vector((0.02, 0.10, 0.03))),
+            ("Bolt", Vector((0, 0.12, 0.01)), Vector((0.015, 0.03, 0.025))),
+            ("Trigger", Vector((0, -0.03, -0.03)), Vector((0.005, 0.01, 0.03))),
+            ("Magazine", Vector((0, -0.02, -0.07)), Vector((0.015, 0.06, 0.06))),
+            ("Charging Handle", Vector((0, -0.08, 0.03)), Vector((0.02, 0.03, 0.01))),
+            ("Barrel", Vector((0, 0.25, 0.005)), Vector((0.01, 0.20, 0.01))),
+        ]
+
+        arm_data = bpy.data.armatures.new("WeaponRig")
+        arm_obj = bpy.data.objects.new("WeaponRig", arm_data)
+        context.collection.objects.link(arm_obj)
+        context.view_layer.objects.active = arm_obj
+
+        bpy.ops.object.mode_set(mode="EDIT")
+        for name, pos, _ in parts:
+            bone = arm_data.edit_bones.new(name)
+            bone.head = pos
+            bone.tail = pos + Vector((0, 0, 0.02))
+        for name, _, _ in parts:
+            if name != "Weapon Root":
+                eb = arm_data.edit_bones.get(name)
+                root = arm_data.edit_bones.get("Weapon Root")
+                if eb and root:
+                    eb.parent = root
+        bpy.ops.object.mode_set(mode="OBJECT")
+        arm_obj["weaponrig"] = True
+
+        if self.test_type == "SEP_NAMED":
+            for name, pos, size in parts:
+                bpy.ops.mesh.primitive_cube_add(size=1, location=pos)
+                o = context.active_object
+                o.scale = size
+                bpy.ops.object.transform_apply(scale=True)
+                o.name = name
+                o.parent = arm_obj
+        elif self.test_type == "SEP_BAD":
+            for i, (_, pos, size) in enumerate(parts):
+                bpy.ops.mesh.primitive_cube_add(size=1, location=pos)
+                o = context.active_object
+                o.scale = size
+                bpy.ops.object.transform_apply(scale=True)
+                o.name = f"Cube.{i:03d}"
+                o.parent = arm_obj
+        elif self.test_type in ("FUSED_MAT", "FUSED_ISLAND", "FUSED_SINGLE"):
+            import bmesh as _bm
+            bm = _bm.new()
+            materials = []
+            prev_verts = None
+            for name, pos, size in parts:
+                mat = bpy.data.materials.new(name=f"mat_{name}")
+                materials.append(mat)
+                mi = len(materials) - 1
+                half = size / 2
+                verts = []
+                for dx in (-half.x, half.x):
+                    for dy in (-half.y, half.y):
+                        for dz in (-half.z, half.z):
+                            verts.append(bm.verts.new(pos + Vector((dx, dy, dz))))
+                for fi in [(0,1,3,2),(4,5,7,6),(0,1,5,4),(2,3,7,6),(0,2,6,4),(1,3,7,5)]:
+                    try:
+                        f = bm.faces.new([verts[j] for j in fi])
+                        f.material_index = mi
+                    except ValueError:
+                        pass
+                if self.test_type == "FUSED_SINGLE" and prev_verts:
+                    try:
+                        bm.faces.new([prev_verts[5], prev_verts[7], verts[0], verts[2]])
+                    except (ValueError, IndexError):
+                        pass
+                prev_verts = verts
+
+            md = bpy.data.meshes.new("weapon_test")
+            if self.test_type == "FUSED_MAT":
+                for m in materials:
+                    md.materials.append(m)
+            bm.to_mesh(md)
+            bm.free()
+            o = bpy.data.objects.new("weapon_test", md)
+            context.collection.objects.link(o)
+            o.parent = arm_obj
+
+        self.report({"INFO"}, f"Test scene: {self.test_type}")
+        return {"FINISHED"}
+
+
+# ===================================================================
 # REGISTRATION (must be after ALL class definitions)
 # ===================================================================
 
@@ -5681,6 +6147,8 @@ _classes = (
     WEAPONRIG_OT_segment_mesh,
     WEAPONRIG_OT_export_fbx,
     WEAPONRIG_OT_play_cycle,
+    WEAPONRIG_OT_auto_assign_vg,
+    WEAPONRIG_OT_generate_test,
     WEAPONRIG_PT_main,
     WEAPONRIG_PT_cycle,
     WEAPONRIG_PT_build_results,
