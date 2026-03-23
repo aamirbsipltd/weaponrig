@@ -2100,20 +2100,31 @@ def _audit_modifiers(mesh_obj):
 
 
 def _find_mesh_for_bone_definitive(bone_name, mesh_objects, aliases=None):
-    """Match bone name to mesh object by name, contains, or alias."""
+    """Match bone name to mesh object by name, contains, or alias (with glob support)."""
+    from fnmatch import fnmatch
     bone_lower = bone_name.lower()
+    # 1. Exact match (case-insensitive)
     for obj in mesh_objects:
         if obj.name.lower() == bone_lower:
             return obj
+    # 2. Contains match (either direction)
     for obj in mesh_objects:
         if bone_lower in obj.name.lower() or obj.name.lower() in bone_lower:
             return obj
+    # 3. Alias match — supports glob patterns like "*bcg*", "*bolt*carrier*"
     if aliases:
         for alias in aliases:
             al = alias.lower()
             for obj in mesh_objects:
-                if al in obj.name.lower() or obj.name.lower() in al:
-                    return obj
+                obj_lower = obj.name.lower()
+                if "*" in al or "?" in al:
+                    # Glob pattern match
+                    if fnmatch(obj_lower, al):
+                        return obj
+                else:
+                    # Plain substring match
+                    if al in obj_lower or obj_lower in al:
+                        return obj
     return None
 
 
@@ -2310,8 +2321,10 @@ def build_weapon_rig(context, config_bones, mesh_objects, part_aliases=None):
             try:
                 _cfg = WeaponConfig.from_dict(WEAPON_CONFIGS[weapon_type])
                 spatial = _spatial_match_parts(_cfg, mesh_objects)
-            except Exception:
-                pass
+            except Exception as _e:
+                issues.append(f"Spatial matching failed: {_e}")
+        else:
+            issues.append(f"No config for spatial matching (weapon_type='{weapon_type}')")
         for bdef in config_bones:
             name = bdef["name"]
             if bone_positions[name] is None and name in spatial:
