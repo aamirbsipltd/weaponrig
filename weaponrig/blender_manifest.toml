@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "weaponrig"
-version = "0.24.0"
+version = "0.25.0"
 name = "WeaponRig"
 tagline = "Guided weapon rigging assistant for FPS games"
 maintainer = "Aamir Farrukh <aamir.farrukh@gmail.com>"

@@ -3,7 +3,7 @@
 bl_info = {
     "name": "WeaponRig",
     "author": "Aamir Farrukh",
-    "version": (0, 24, 0),
+    "version": (0, 25, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > WeaponRig",
     "description": "Guided weapon rigging assistant for FPS games",
@@ -2340,6 +2340,66 @@ def build_weapon_rig(context, config_bones, mesh_objects, part_aliases=None):
                 bone_positions[name] = {"head": center, "tail": center + avecs.get(axis, avecs["Y"])}
                 issues.append(f"Spatial match: '{name}' → '{mesh_obj.name}'")
 
+    # AUTO-SEGMENT FUSED MESH: if most bones still unmatched and we have 1 mesh,
+    # run dihedral segmentation to create per-bone vertex groups on the single mesh
+    fused_mesh_regions = {}  # {bone_name: face_index_set} — used in Phase 4
+    still_unmatched = sum(1 for v in bone_positions.values() if v is None)
+
+    if still_unmatched > len(config_bones) * 0.5 and len(mesh_objects) <= 2:
+        # Single or near-single mesh — try auto-segmentation
+        target_mesh = mesh_objects[0]
+        try:
+            segments = _segment_by_dihedral(target_mesh, angle_threshold_deg=35.0)
+            if segments and len(segments) > 1:
+                # Smart merge to reduce over-segmentation
+                import bmesh as _bm_mod
+                _bm = _bm_mod.new()
+                try:
+                    _bm.from_mesh(target_mesh.data)
+                    segments = _smart_merge_segments(segments, _bm, expected_count=len(config_bones))
+                finally:
+                    _bm.free()
+
+                # Match segments to bones by spatial analysis
+                wt = ""
+                try:
+                    wt = bpy.context.scene.weaponrig_weapon_type
+                except Exception:
+                    pass
+                fused_mesh_regions = _match_segments_to_bones(
+                    segments, target_mesh, config_bones, weapon_type=wt
+                )
+
+                # Position bones at segment centroids
+                mat = target_mesh.matrix_world
+                polys = target_mesh.data.polygons
+                verts = target_mesh.data.vertices
+
+                for bone_name, face_set in fused_mesh_regions.items():
+                    vert_ids = set()
+                    for fi in face_set:
+                        if fi < len(polys):
+                            for vi in polys[fi].vertices:
+                                vert_ids.add(vi)
+                    if vert_ids:
+                        world_pts = [mat @ verts[vi].co for vi in vert_ids]
+                        center = sum(world_pts, Vector()) / len(world_pts)
+                        # Find this bone's axis
+                        bdef_match = next((b for b in config_bones if b["name"] == bone_name), None)
+                        axis = bdef_match.get("axis", "Y") if bdef_match else "Y"
+                        avecs = {
+                            "X": Vector((BONE_LENGTH, 0, 0)), "Y": Vector((0, BONE_LENGTH, 0)),
+                            "Z": Vector((0, 0, BONE_LENGTH)), "-X": Vector((-BONE_LENGTH, 0, 0)),
+                            "-Y": Vector((0, -BONE_LENGTH, 0)), "-Z": Vector((0, 0, -BONE_LENGTH)),
+                        }
+                        bone_positions[bone_name] = {"head": center, "tail": center + avecs.get(axis, avecs["Y"])}
+                        bone_mesh_map[bone_name] = target_mesh
+                        issues.append(f"Auto-segment: '{bone_name}' → {len(face_set)} faces")
+
+                issues.append(f"Auto-segmented: {len(fused_mesh_regions)} regions from 1 mesh ({len(segments)} total segments)")
+        except Exception as _seg_err:
+            issues.append(f"Auto-segmentation failed: {_seg_err}")
+
     # Report truly unmatched bones
     for name, pos in bone_positions.items():
         if pos is None:
@@ -2480,33 +2540,77 @@ def build_weapon_rig(context, config_bones, mesh_objects, part_aliases=None):
                 obj.vertex_groups.remove(vg)
 
     bound = 0
-    for bname, mobj in bone_mesh_map.items():
-        evg = mobj.vertex_groups.get(bname)
-        if evg:
-            mobj.vertex_groups.remove(evg)
-        vg = mobj.vertex_groups.new(name=bname)
-        fv = set()
-        for p in mobj.data.polygons:
-            for vi in p.vertices:
-                fv.add(vi)
-        vg.add(list(fv) if fv else list(range(len(mobj.data.vertices))), 1.0, "REPLACE")
+    bound_meshes = set()  # track which meshes got armature modifier
+
+    if fused_mesh_regions:
+        # FUSED MESH PATH: assign per-bone vertex groups from face regions
+        target_mesh = mesh_objects[0]
+        polys = target_mesh.data.polygons
+
+        # Clear all existing vertex groups first
+        target_mesh.vertex_groups.clear()
+
+        for bname, face_set in fused_mesh_regions.items():
+            vg = target_mesh.vertex_groups.new(name=bname)
+            vert_ids = set()
+            for fi in face_set:
+                if fi < len(polys):
+                    for vi in polys[fi].vertices:
+                        vert_ids.add(vi)
+            if vert_ids:
+                vg.add(list(vert_ids), 1.0, "REPLACE")
+                bound += 1
+
+        # One Armature modifier for the single mesh
         am = None
-        for mod in mobj.modifiers:
+        for mod in target_mesh.modifiers:
             if mod.type == "ARMATURE":
                 am = mod
                 break
         if not am:
-            am = mobj.modifiers.new(name="WeaponRig", type="ARMATURE")
+            am = target_mesh.modifiers.new(name="WeaponRig", type="ARMATURE")
         am.object = armature_obj
         am.use_vertex_groups = True
         am.use_bone_envelopes = False
         am.show_viewport = False
         am.show_viewport = True
-        mobj.data.update()
-        mobj.parent = armature_obj
-        mobj.parent_type = "OBJECT"
-        mobj.matrix_parent_inverse = armature_obj.matrix_world.inverted()
-        bound += 1
+        target_mesh.data.update()
+        target_mesh.parent = armature_obj
+        target_mesh.parent_type = "OBJECT"
+        target_mesh.matrix_parent_inverse = armature_obj.matrix_world.inverted()
+
+    else:
+        # SEPARATED MESH PATH: one vertex group per mesh object (original behavior)
+        for bname, mobj in bone_mesh_map.items():
+            evg = mobj.vertex_groups.get(bname)
+            if evg:
+                mobj.vertex_groups.remove(evg)
+            vg = mobj.vertex_groups.new(name=bname)
+            fv = set()
+            for p in mobj.data.polygons:
+                for vi in p.vertices:
+                    fv.add(vi)
+            vg.add(list(fv) if fv else list(range(len(mobj.data.vertices))), 1.0, "REPLACE")
+
+            if id(mobj) not in bound_meshes:
+                am = None
+                for mod in mobj.modifiers:
+                    if mod.type == "ARMATURE":
+                        am = mod
+                        break
+                if not am:
+                    am = mobj.modifiers.new(name="WeaponRig", type="ARMATURE")
+                am.object = armature_obj
+                am.use_vertex_groups = True
+                am.use_bone_envelopes = False
+                am.show_viewport = False
+                am.show_viewport = True
+                mobj.data.update()
+                mobj.parent = armature_obj
+                mobj.parent_type = "OBJECT"
+                mobj.matrix_parent_inverse = armature_obj.matrix_world.inverted()
+                bound_meshes.add(id(mobj))
+            bound += 1
 
     # PHASE 5: FORCE EVALUATION
     armature_obj.data.update_tag()
@@ -4777,6 +4881,154 @@ def _smart_merge_segments(segments, bm, expected_count=15):
             large[best_idx].update(t)
 
     return large if large else segments
+
+
+def _match_segments_to_bones(segments, mesh_obj, config_bones, weapon_type=""):
+    """Match face-index regions to bone names using spatial analysis.
+
+    For each segment, computes centroid + bounding box from the mesh vertices,
+    then scores against spatial rules (same rules as _spatial_match_parts but
+    operating on face regions inside a single mesh).
+
+    Returns: dict of {bone_name: face_index_set}
+    """
+    if not segments or not mesh_obj:
+        return {}
+
+    mat = mesh_obj.matrix_world
+    verts = mesh_obj.data.vertices
+    polys = mesh_obj.data.polygons
+
+    # Compute info for each segment
+    seg_info = []
+    all_volumes = []
+    all_centers = []
+
+    for seg in segments:
+        # Collect world-space vertex positions for this segment's faces
+        vert_indices = set()
+        for fi in seg:
+            if fi < len(polys):
+                for vi in polys[fi].vertices:
+                    vert_indices.add(vi)
+
+        if not vert_indices:
+            seg_info.append(None)
+            continue
+
+        world_verts = [mat @ verts[vi].co for vi in vert_indices]
+        xs = [v.x for v in world_verts]
+        ys = [v.y for v in world_verts]
+        zs = [v.z for v in world_verts]
+        center = Vector((sum(xs)/len(xs), sum(ys)/len(ys), sum(zs)/len(zs)))
+        ex = max(xs) - min(xs)
+        ey = max(ys) - min(ys)
+        ez = max(zs) - min(zs)
+        vol = max(ex * ey * ez, 1e-9)
+        dominant = "Y" if ey >= ex and ey >= ez else ("X" if ex >= ez else "Z")
+        aspect = max(ex, ey, ez) / max(min(ex, ey, ez), 0.0001)
+        all_volumes.append(vol)
+        all_centers.append(center)
+
+        seg_info.append({
+            "center": center, "ex": ex, "ey": ey, "ez": ez,
+            "vol": vol, "dominant": dominant, "aspect": aspect,
+            "face_count": len(seg), "vert_indices": vert_indices,
+        })
+
+    if not all_centers:
+        return {}
+
+    weapon_center = sum(all_centers, Vector()) / len(all_centers)
+    median_vol = sorted(all_volumes)[len(all_volumes) // 2] if all_volumes else 1.0
+
+    # Add relative position to each segment
+    for si in seg_info:
+        if si:
+            si["rel"] = si["center"] - weapon_center
+
+    # Select spatial rules based on weapon type
+    is_bullpup = "bullpup" in weapon_type.lower() if weapon_type else False
+    spatial_rules = _SPATIAL_RULES_BULLPUP if is_bullpup else _SPATIAL_RULES
+
+    # Score each segment against each bone's spatial rules
+    matches = {}
+    used_segments = set()
+
+    # Build list of (bone_name, score, seg_idx) for greedy assignment
+    candidates = []
+    for bdef in config_bones:
+        bone_name = bdef["name"] if isinstance(bdef, dict) else bdef.name
+        bone_lower = bone_name.lower().replace(" ", "_")
+        rules = spatial_rules.get(bone_lower)
+        if not rules:
+            continue
+
+        for si_idx, si in enumerate(seg_info):
+            if si is None:
+                continue
+            score = 0.0
+            checks = 0
+
+            if "dominant_axis" in rules:
+                checks += 1
+                if si["dominant"] == rules["dominant_axis"]:
+                    score += 1.0
+            if "aspect_min" in rules:
+                checks += 1
+                if si["aspect"] >= rules["aspect_min"]:
+                    score += 1.0
+            if "z_below" in rules:
+                checks += 1
+                if si["rel"].z < -0.005:
+                    score += 1.0
+            if "z_above" in rules:
+                checks += 1
+                if si["rel"].z > 0.005:
+                    score += 1.0
+            if "y_behind" in rules:
+                checks += 1
+                if si["rel"].y > 0.005:
+                    score += 1.0
+            if "y_front" in rules:
+                checks += 1
+                if si["rel"].y < -0.005:
+                    score += 1.0
+            if "x_right" in rules:
+                checks += 1
+                if si["rel"].x > 0.003:
+                    score += 1.0
+            if "x_left" in rules:
+                checks += 1
+                if si["rel"].x < -0.003:
+                    score += 1.0
+            if "volume" in rules:
+                checks += 1
+                rv = rules["volume"]
+                if rv == "tiny" and si["vol"] < median_vol * 0.15:
+                    score += 1.0
+                elif rv == "small" and si["vol"] < median_vol * 0.5:
+                    score += 1.0
+                elif rv == "medium" and median_vol * 0.3 < si["vol"] < median_vol * 1.5:
+                    score += 1.0
+                elif rv == "large" and si["vol"] > median_vol * 1.0:
+                    score += 1.0
+                elif rv == "largest" and si["vol"] > median_vol * 1.5:
+                    score += 1.0
+
+            norm_score = score / max(checks, 1)
+            if norm_score >= 0.4:
+                candidates.append((bone_name, norm_score, si_idx))
+
+    # Greedy assignment: highest score first, no double-assignment
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    for bone_name, score, si_idx in candidates:
+        if bone_name in matches or si_idx in used_segments:
+            continue
+        matches[bone_name] = segments[si_idx]
+        used_segments.add(si_idx)
+
+    return matches
 
 
 class WEAPONRIG_OT_auto_separate(bpy.types.Operator):
